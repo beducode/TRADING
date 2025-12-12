@@ -26,24 +26,36 @@ from datetime import datetime, timezone
 # ===========================
 # USER CONFIGURATION
 # ===========================
-SYMBOL = "XAUUSDm"            # symbol chosen BTCUSDm
+SYMBOL = "BTCUSDm"            # symbol chosen BTCUSDm
 TIMEFRAME = mt5.TIMEFRAME_M1
-LOT = 0.01                   # default volume
+LOT = 0.01 # default volume
+
 if SYMBOL == "XAUUSDm":
     # SL/TP
-    TP_IN_POINTS = 2
     SL_IN_POINTS = 1
+    TP_IN_POINTS = 2
     # SMA CROSS
-    MIN_SMA_DISTANCE = 1
-    MAX_SMA_DISTANCE = 0.25
-    # CANDLE
-    BODY_CANDLE_DIFF = 0.25
+    MAX_SMA_DISTANCE = 2
+    BODY_CANDLE_DIFF = 2
+
+    # Trailing / Break-even / Auto-close settings
+    TRAIL_START_PROFIT = 1    # USD - start trailing after this profit
+    TRAIL_DISTANCE = 0.25      # USD - trailing distance from current price
+    SWING_LOOKBACK = 3        # Candle low/high reference for SL update (not used heavily here)
+    AUTO_CLOSE_ALL_NET_PROFIT = 50.0  # USD - close all positions on SYMBOL when net profit reaches this
+    POLL_SECONDS = 1.0           # loop sleep
 else:
-    TP_IN_POINTS = 100
-    SL_IN_POINTS = 200
-    MIN_SMA_DISTANCE = 10
-    MAX_SMA_DISTANCE = 20
-    BODY_CANDLE_DIFF = 2.5
+    SL_IN_POINTS = 100
+    TP_IN_POINTS = 200
+    MAX_SMA_DISTANCE = 200
+    BODY_CANDLE_DIFF = 200
+
+    # Trailing / Break-even / Auto-close settings
+    TRAIL_START_PROFIT = 100    # USD - start trailing after this profit
+    TRAIL_DISTANCE = 25      # USD - trailing distance from current price
+    SWING_LOOKBACK = 300        # Candle low/high reference for SL update (not used heavily here)
+    AUTO_CLOSE_ALL_NET_PROFIT = 5000  # USD - close all positions on SYMBOL when net profit reaches this
+    POLL_SECONDS = 1.0           # loop sleep
 
 RISK_PERCENT = None          # optional: if set (0.5 = 0.5%) compute LOT; else use LOT
 RSI_PERIOD = 3
@@ -57,17 +69,9 @@ ATR_PERIOD = 3
 ATR_MULT_XAUUSD = 1.5
 ATR_MULT_BTCUSD = 2
 
-SMA_LOW_PERIOD = 8
-SMA_HIGH_PERIOD = 21
+SMA_LOW_PERIOD = 30
+SMA_HIGH_PERIOD = 60
 SMA_TREND_PERIOD = 100
-
-# Trailing / Break-even / Auto-close settings
-BREAK_EVEN_PROFIT = 0.5   # USD - when position profit >= this, move SL to break-even (price_open)
-TRAIL_START_PROFIT = 0.5    # USD - start trailing after this profit
-TRAIL_DISTANCE = 1.0      # USD - trailing distance from current price
-SWING_LOOKBACK = 3        # Candle low/high reference for SL update (not used heavily here)
-AUTO_CLOSE_ALL_NET_PROFIT = 50.0  # USD - close all positions on SYMBOL when net profit reaches this
-POLL_SECONDS = 1.0           # loop sleep
 
 # Aggressive trade limiting
 MAX_POSITIONS = 1            # max concurrent positions on symbol (avoid overtrading)
@@ -187,32 +191,22 @@ def stochastic_signals(df):
 def sma(series: pd.Series, period: int) -> pd.Series:
     return series.rolling(window=period).mean()
 
-
-def get_sma_trend(df):
-    close = df['close']
-    price_close = df['close'].iloc[-1]
-    sma_low = sma(close, SMA_LOW_PERIOD).iloc[-1]
-    sma_high = sma(close, SMA_HIGH_PERIOD).iloc[-1]
-    sma_distance_buy = sma_high + MIN_SMA_DISTANCE
-    sma_distance_sell =  sma_high - MIN_SMA_DISTANCE
-
-    market_uptrend = (sma_low > sma_high) and sma_low > sma_distance_buy and (price_close > sma_low)
-    market_downtrend = (sma_low < sma_high) and sma_low < sma_distance_sell and (price_close < sma_low)
-
-    if market_uptrend:
-        return "UP"
-    elif market_downtrend:
-        return "DOWN"
-    else:
-        return "SIDEWAYS"
-
-
 def get_rsi_position(p,c):
     if np.isnan(p) or np.isnan(c):
         return 'SIDEWAYS'
     if p < BUY_RSI_THRESHOLD and c > BUY_RSI_THRESHOLD:
         return 'BUY'
     if p > SELL_RSI_THRESHOLD and c < SELL_RSI_THRESHOLD:
+        return 'SELL'
+    
+    return 'WAIT'
+
+def get_trend_position(signal,p,c):
+    if np.isnan(p) or np.isnan(c):
+        return 'SIDEWAYS'
+    if signal == 'BUY' and c > p:
+        return 'BUY'
+    if signal == 'SELL' and c < p:
         return 'SELL'
     
     return 'WAIT'
@@ -231,10 +225,10 @@ def get_sinyal_sma_cross(df):
     sma_low = sma(close, SMA_LOW_PERIOD)
     sma_high = sma(close, SMA_HIGH_PERIOD)
 
-    prev_sma_low = sma_low.iloc[-2]
-    prev_sma_high = sma_high.iloc[-2]
-    curr_sma_low = sma_low.iloc[-1]
-    curr_sma_high = sma_high.iloc[-1]
+    prev_sma_low = sma_low.iloc[-3]
+    prev_sma_high = sma_high.iloc[-3]
+    curr_sma_low = sma_low.iloc[-2]
+    curr_sma_high = sma_high.iloc[-2]
 
     curr_sma_high_distance_buy = curr_sma_high + MAX_SMA_DISTANCE
     curr_sma_high_distance_sell = curr_sma_high - MAX_SMA_DISTANCE
@@ -253,17 +247,13 @@ def avoid_small_candle_signal_direction(df, min_body_pips, signal):
 
     # BUY signal → hanya valid jika candle hijau
     if signal == "BUY":
-        if close <= open_:
-            return True  # candle tidak hijau → hindari entry
-        if body < min_body_pips:
+        if body < min_body_pips and close <= open_:
             return True  # body kecil → hindari entry
         return False
 
     # SELL signal → hanya valid jika candle merah
     if signal == "SELL":
-        if close >= open_:
-            return True  # candle tidak merah → hindari entry
-        if body < min_body_pips:
+        if body < min_body_pips and close >= open_:
             return True  # body kecil → hindari entry
         return False
 
@@ -478,8 +468,6 @@ def compute_signals(df):
     df['cross_up_prev_candle'] = (df['SMA_LOW'].shift(HIGH_SHIFT) > df['SMA_HIGH'].shift(HIGH_SHIFT)) & (df['SMA_LOW'].shift(SMA_LOW_SHIFT) <= df['SMA_HIGH'].shift(SMA_LOW_SHIFT))
     df['cross_down_prev_candle'] = (df['SMA_LOW'].shift(HIGH_SHIFT) < df['SMA_HIGH'].shift(HIGH_SHIFT)) & (df['SMA_LOW'].shift(SMA_LOW_SHIFT) >= df['SMA_HIGH'].shift(SMA_LOW_SHIFT))
     df['sma_distance'] = abs(df['SMA_LOW'] - df['SMA_HIGH'])
-    df['valid_cross_up'] = df['cross_up_prev_candle'] & (df['sma_distance'] >= MIN_SMA_DISTANCE)
-    df['valid_cross_down'] = df['cross_down_prev_candle'] & (df['sma_distance'] >= MIN_SMA_DISTANCE)
     return df
 
 # ===========================
@@ -526,10 +514,16 @@ def main():
             prev = df_sign.iloc[-2]
             current = df_sign.iloc[-1]
 
-            rsi_position = get_rsi_position(prev['RSI'], current['RSI'])
+            # Detect RSI cross but only if not locked base on cross SMA
+            rsi_position = get_rsi_position(last_prev['RSI'], prev['RSI'])
             if not rsi_cross_locked and rsi_position in ("BUY","SELL"):
-                last_rsi = rsi_position
-                rsi_cross_locked = True
+                if rsi_position == last_signal:
+                    last_rsi = rsi_position
+                    rsi_cross_locked = True
+                else:
+                    pass
+
+            trend_position = get_trend_position(last_signal, last_prev['SMA_LOW'], current['SMA_LOW'])
 
             adx_position = get_adx_position(current['ADX'])
 
@@ -550,12 +544,12 @@ def main():
 
             # Only allow entry when SMA cross is locked and its direction matches trend + confirmations
             if sma_cross_locked and last_signal == 'BUY':
-                if last_rsi == 'BUY' and adx_position and check_body and not candle_check:
+                if last_rsi == 'BUY' and adx_position and check_body and candle_check and trend_position == 'BUY':
                     buy_signal = True
                     sell_signal = False
 
             if sma_cross_locked and last_signal == 'SELL':
-                if last_rsi == 'SELL' and adx_position and check_body and not candle_check:
+                if last_rsi == 'SELL' and adx_position and check_body and candle_check and trend_position == 'SELL':
                     sell_signal = True
                     buy_signal = False
 
@@ -571,14 +565,13 @@ def main():
                 # SL di bawah SMA60
                 sl_distance = abs(price - sma_high)
                 sl_position = sma_high - 0.01  # agar pasti berada sedikit di bawah
+                # Risk Reward 1:2
+                tp_position = price + (sl_distance * 2)
 
-                # Risk Reward 1:3
-                tp_position = price + (sl_distance * 3)
-
-                # sl_position = price - SL_IN_POINTS
-                # tp_position = price + TP_IN_POINTS
                 res = place_market_order(SYMBOL, mt5.ORDER_TYPE_BUY, price, volume, sl_position, tp_position, comment="Entry Buy Position")
                 buy_signal = False
+                rsi_cross_locked = False
+                last_rsi = "WAIT"
                 prev_profit = 0
                 time.sleep(0.2)
 
@@ -587,21 +580,21 @@ def main():
                 volume = LOT
                 price = bid
                 # SL di atas SMA60
-                sl_distance = abs(price - sma_high)
-                sl_position = sma_high + 0.01  # agar pasti sedikit di atas
-
+                sl_distance = abs(price + sma_high)
+                sl_position = sma_high + 0.01  # agar pasti berada sedikit di atas
                 # Risk Reward 1:2
                 tp_position = price - (sl_distance * 2)
-                # sl_position = price + SL_IN_POINTS
-                # tp_position = price - TP_IN_POINTS
+
                 res = place_market_order(SYMBOL, mt5.ORDER_TYPE_SELL, price, volume, sl_position, tp_position, comment="Entry Sell Position")
                 sell_signal = False
+                rsi_cross_locked = False
+                last_rsi = "WAIT"
                 prev_profit = 0
                 time.sleep(0.2)
                 
             # # Logging
             if num_position < MAX_POSITIONS:
-                logger.info("SMA CROSS: %s | RSI CROSS: %s | ADX CROSS: %s | CANDLE BODY: %s | CANDLE PASS: %s", sinyal_sma_cross, last_rsi, adx_position, check_body, candle_check)
+                logger.info("TREND: %s | SMA CROSS: %s | RSI CROSS: %s | ADX CROSS: %s",trend_position, sinyal_sma_cross, last_rsi, adx_position)
             else:
                 logger.info("Positions open: %s", num_position)
 
@@ -631,20 +624,6 @@ def main():
                         if pos.profit > 0 and prev_profit == 0:
                             prev_profit = pos.profit
 
-                        # Break-even: move SL to entry price when profit >= BREAK_EVEN_PROFIT
-                        if pos.profit >= BREAK_EVEN_PROFIT:
-                            # set SL to price_open (break-even) if not already
-                            if pos.type == mt5.POSITION_TYPE_BUY:
-                                desired_sl = pos.price_open
-                                if pos.sl is None or pos.sl < desired_sl:
-                                    set_position_sl_tp(pos.ticket, desired_sl, pos.tp)
-                                    logger.info("Set break-even SL for BUY pos %s -> %s", pos.ticket, desired_sl)
-                            elif pos.type == mt5.POSITION_TYPE_SELL:
-                                desired_sl = pos.price_open
-                                if pos.sl is None or pos.sl > desired_sl:
-                                    set_position_sl_tp(pos.ticket, desired_sl, pos.tp)
-                                    logger.info("Set break-even SL for SELL pos %s -> %s", pos.ticket, desired_sl)
-
                         # Trailing: if profit passes TRAIL_START_PROFIT, move SL to follow price with TRAIL_DISTANCE
                         if pos.profit >= TRAIL_START_PROFIT:
                             if pos.type == mt5.POSITION_TYPE_BUY:
@@ -669,20 +648,6 @@ def main():
                 buy_signal = False
                 sell_signal = False
                 prev_profit = 0
-
-            # reset RSI lock when there are no positions
-            if num_position == 0 and last_rsi == "BUY" and (current["SMA_LOW"] < prev['SMA_LOW']):
-                rsi_cross_locked = False
-                last_rsi = "WAIT"
-            else:
-                pass
-            
-            # reset RSI lock when there are no positions
-            if num_position == 0 and last_rsi == "SELL" and (current["SMA_LOW"] > prev['SMA_LOW']):
-                rsi_cross_locked = False
-                last_rsi = "WAIT"
-            else:
-                pass
 
             time.sleep(POLL_SECONDS)
 
