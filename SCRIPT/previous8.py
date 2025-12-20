@@ -15,7 +15,7 @@ TIMEFRAME_ENTRY = mt5.TIMEFRAME_M1   # TREND ENTRY
 TIMEFRAME_UTAMA = mt5.TIMEFRAME_M5   # TREND UTAMA
 RR = 2.0
 if SYMBOL == "BTCUSDm":
-    LOT = 0.03
+    LOT = 0.05
 else:
     LOT = 0.01
 POLL_SECONDS = 1.0
@@ -37,7 +37,6 @@ STOCH_LOW_LEVEL = 30
 
 # ---- ATR PERIODE ----
 ATR_PERIODE = 8
-ATR_MAIN_PERIODE = 14
 ATR_HIGH_LEVEL = 30
 ATR_LOW_LEVEL = 10
 ATR_MOM_HIGH_LEVEL = 80
@@ -81,7 +80,7 @@ def calculate_stochastic(df, k_period, k_smooth, d_period):
     df['%D'] = df['%K'].rolling(window=d_period).mean()
     return df
 
-def atr_calculation(df, period):
+def atr_calculation(df):
     high = df['high']
     low = df['low']
     close = df['close']
@@ -93,7 +92,7 @@ def atr_calculation(df, period):
             abs(low - close.shift(1))
         )
     )
-    return tr.rolling(period).mean()
+    return tr.rolling(ATR_PERIODE).mean()
 
 # ===========================
 # MT5 SIGNAL
@@ -112,8 +111,8 @@ def get_trend_signal(df):
     trend_sell = (real_ema < curr_ema < prev_ema)
 
     # KONDISI BEBERAPA CANDLE TERAKHIR
-    last_open= open.iloc[-6:-1]
-    last_ema = trendema.iloc[-6:-1]
+    last_open = open.iloc[-11:-1]
+    last_ema = trendema.iloc[-11:-1]
 
     buy_validation = (last_open > last_ema).all()
     sell_validation = (last_open < last_ema).all()
@@ -149,9 +148,15 @@ def stochastic_signal(df):
     else:
         return 'WAIT'
     
+def get_atr_point(df):
+    data_atr = atr_calculation(df)
+
+    atr = data_atr.iloc[-1]
+
+    return atr
 
 def atr_position(df):
-    data_atr = atr_calculation(df, ATR_PERIODE)
+    data_atr = atr_calculation(df)
 
     atr = data_atr.iloc[-1]
 
@@ -161,7 +166,7 @@ def atr_position(df):
     return False
 
 def atr_momentum(df):
-    data_atr = atr_calculation(df, ATR_MAIN_PERIODE)
+    data_atr = atr_calculation(df)
 
     atrmom = data_atr.iloc[-1]
 
@@ -381,14 +386,14 @@ def main():
             signal_tren = get_trend_signal(df)
             signal_stoch = stochastic_signal(data_stoch)
             signal_atr = atr_position(df)
-            signal_momen = atr_momentum(dfmain)
+            atr_point = get_atr_point(df)
             
 
             # VALIDASI SIGNAL
-            if signal_tren == 'BUY' and signal_stoch == 'BUY' and signal_atr and signal_momen:
+            if signal_tren == 'BUY' and signal_stoch == 'BUY' and signal_atr:
                 buy_signal = True
                 sell_signal = False
-            if signal_tren == 'SELL' and signal_stoch == 'SELL' and signal_atr and signal_momen:
+            if signal_tren == 'SELL' and signal_stoch == 'SELL' and signal_atr:
                 sell_signal = True
                 buy_signal = False
 
@@ -424,7 +429,7 @@ def main():
 
             # PRINT RUNNING
             if num_position < MAX_POSITIONS:
-                logger.info("PAIR : %s | TREND : %s | STOCH CROSS : %s | ATR : %s | MOMENTUM : %s",SYMBOL, signal_tren, signal_stoch, signal_atr, signal_momen)
+                logger.info("PAIR : %s | TREND : %s | STOCH CROSS : %s | ATR : %s",SYMBOL, signal_tren, signal_stoch, signal_atr)
             else:
                 logger.info("POSITIONS OPEN : %s | PAIR : %s", num_position, SYMBOL)
             
