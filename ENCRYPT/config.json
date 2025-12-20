@@ -1,0 +1,32 @@
+{
+  "symbol": "BTCUSDm",
+
+  "timeframe": {
+    "entry": "M1",
+    "confirm": "M30"
+  },
+
+  "trading": {
+    "rr": 2.0,
+    "lot": 0.05,
+    "poll_seconds": 1.0,
+    "max_positions": 1
+  },
+
+  "ema": {
+    "fast": 8,
+    "slow": 21,
+    "trend": 200
+  },
+
+  "rsi": {
+    "period": 14,
+    "mid_level": 50,
+    "limit_buy": 65,
+    "limit_sell": 35
+  },
+
+  "profit_trailing": {
+    "profit_trigger": 1.0
+  }
+}
