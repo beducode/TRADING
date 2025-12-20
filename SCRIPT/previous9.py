@@ -3,60 +3,37 @@ import pandas as pd
 import numpy as np
 import time
 import os
-import json
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 
 # ===========================
-# LOAD CONFIG JSON
-# ===========================
-with open("config.json", "r") as f:
-    CONFIG = json.load(f)
-
-# ===========================
-# MAP TIMEFRAME STRING → MT5
-# ===========================
-TF_MAP = {
-    "M1": mt5.TIMEFRAME_M1,
-    "M5": mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "M30": mt5.TIMEFRAME_M30,
-    "H1": mt5.TIMEFRAME_H1
-}
-
-# ===========================
 # USER CONFIGURATION
 # ===========================
-SYMBOL = CONFIG["symbol"]
-
-TIMEFRAME_ENTRY = TF_MAP[CONFIG["timeframe"]["entry"]]
-TIMEFRAME_CONFIRM = TF_MAP[CONFIG["timeframe"]["confirm"]]
-
-RR = CONFIG["trading"]["rr"]
-LOT = CONFIG["trading"]["lot"]
-POLL_SECONDS = CONFIG["trading"]["poll_seconds"]
-MAX_POSITIONS = CONFIG["trading"]["max_positions"]
-
-# ===========================
-# EMA CONFIG
-# ===========================
-EMA_FAST = CONFIG["ema"]["fast"]
-EMA_SLOW = CONFIG["ema"]["slow"]
-EMA_TREND = CONFIG["ema"]["trend"]
+SYMBOL = "BTCUSDm"
+TIMEFRAME_ENTRY = mt5.TIMEFRAME_M1   # TREND ENTRY
+RR = 1.0
+if SYMBOL == "BTCUSDm":
+    LOT = 0.03
+else:
+    LOT = 0.01
+POLL_SECONDS = 1.0
+MAX_POSITIONS = 1
 
 # ===========================
-# RSI CONFIG
+# INDIKATOR CONFIGURATION
 # ===========================
-RSI_PERIOD = CONFIG["rsi"]["period"]
-MID_RSI_LEVEL = CONFIG["rsi"]["mid_level"]
-RSI_LIMIT_BUY = CONFIG["rsi"]["limit_buy"]
-RSI_LIMIT_SELL = CONFIG["rsi"]["limit_sell"]
 
-# ===========================
-# PROFIT TRAILING
-# ===========================
-PROFIT_TRIGGER = CONFIG["profit_trailing"]["profit_trigger"]
+# ---- EMA SETUP ----
+EMA_FAST = 8
+EMA_SLOW = 21
+EMA_TREND = 200
+
+# ---- RSI SETUP ----
+RSI_PERIOD = 14
+MID_RSI_LEVEL = 50
+RSI_LIMIT_BUY = 65
+RSI_LIMIT_SELL = 35
 
 # ===========================
 # GLOBAL PARAM
@@ -64,12 +41,18 @@ PROFIT_TRIGGER = CONFIG["profit_trailing"]["profit_trigger"]
 buy_signal = False
 sell_signal = False
 signal_locked = False
+
+# ===========================
+# PROFIT TRAILING PARAM
+# ===========================
+PROFIT_TRIGGER = 1.0
 profit_peak = {}
 
 # ===========================
 # LOGING SETUP
 # ===========================
 logger = logging.getLogger("scalper")
+logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
 console = logging.StreamHandler()
 console.setFormatter(formatter)
@@ -81,127 +64,76 @@ logger.addHandler(console)
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
 
-def valid_ema_cross(df):
-    close = df['close']
-    open_ = df['open']
-    high = df['high']
-    low = df['low']
+def calculate_rsi(close: pd.Series, period: int) -> pd.Series:
+    close = close.astype(float).reset_index(drop=True)
+    delta = close.diff()
 
-    emafast = ema(close, EMA_FAST)
-    emaslow = ema(close, EMA_SLOW)
+    gain = delta.clip(lower=0).fillna(0)
+    loss = -delta.clip(upper=0).fillna(0)
 
-    # Candle sekarang & sebelumnya
-    prev = -2
-    curr = -1
+    # prepare arrays
+    avg_gain = np.zeros(len(close))
+    avg_loss = np.zeros(len(close))
+    rsi = np.full(len(close), np.nan)
 
-    # =========================
-    # 1. DETEKSI CROSS
-    # =========================
-    cross_up = emafast.iloc[prev] < emaslow.iloc[prev] and emafast.iloc[curr] > emaslow.iloc[curr]
-    cross_down = emafast.iloc[prev] > emaslow.iloc[prev] and emafast.iloc[curr] < emaslow.iloc[curr]
+    if len(close) <= period:
+        return pd.Series(rsi)
 
-    # =========================
-    # 2. SLOPE EMA 21
-    # =========================
-    emaslow_slope = emaslow.iloc[curr] - emaslow.iloc[prev]
+    first_gain = gain.iloc[1:period+1].mean()
+    first_loss = loss.iloc[1:period+1].mean()
 
-    uptrend = emaslow_slope > 0
-    downtrend = emaslow_slope < 0
+    avg_gain[period] = first_gain
+    avg_loss[period] = first_loss
 
-    # =========================
-    # 3. JARAK EMA (ANTI CHOPPY)
-    # =========================
-    ema_gap = abs(emafast.iloc[curr] - emaslow.iloc[curr])
-    atr_like = (high - low).rolling(14).mean().iloc[curr]
+    # Wilder smoothing for subsequent values
+    for i in range(period+1, len(close)):
+        avg_gain[i] = (avg_gain[i-1] * (period - 1) + gain.iloc[i]) / period
+        avg_loss[i] = (avg_loss[i-1] * (period - 1) + loss.iloc[i]) / period
 
-    valid_gap = ema_gap > 0.1 * atr_like
+    # compute RSI where avg_loss != 0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rs = avg_gain / avg_loss
+        rsi_vals = 100 - (100 / (1 + rs))
+        rsi = rsi_vals
 
-    # =========================
-    # 4. CANDLE KONFIRMASI
-    # =========================
-    body = abs(close.iloc[curr] - open_.iloc[curr])
-    candle_range = high.iloc[curr] - low.iloc[curr]
-
-    strong_body = body > 0.6 * candle_range
-
-    bullish_close = close.iloc[curr] > open_.iloc[curr]
-    bearish_close = close.iloc[curr] < open_.iloc[curr]
-
-    # =========================
-    # BUY SIGNAL
-    # =========================
-    if (
-        cross_up and
-        uptrend and
-        valid_gap and
-        bullish_close and
-        strong_body and
-        close.iloc[curr] > emaslow.iloc[curr]
-    ):
-        return "BUY"
-
-    # =========================
-    # SELL SIGNAL
-    # =========================
-    if (
-        cross_down and
-        downtrend and
-        valid_gap and
-        bearish_close and
-        strong_body and
-        close.iloc[curr] < emaslow.iloc[curr]
-    ):
-        return "SELL"
-
-    return 'WAIT'
+    return pd.Series(rsi)
 
 # ===========================
 # MT5 SIGNAL
 # ===========================
-def detect_swings(df, left=2, right=2):
-    swings_high = []
-    swings_low = []
+def get_trend_signal(df):
+    close = df['close']
+    open = df['open']
+    filter = ema(close, EMA_TREND)
 
-    for i in range(left, len(df) - right):
-        high = df['high']
-        low = df['low']
+    price_open = open.iloc[-12:-2]
+    filterema = filter.iloc[-12:-2]
 
-        if high[i] == max(high[i-left:i+right+1]):
-            swings_high.append((i, high[i]))
+    market_bullish = (price_open > filterema).all()
+    market_bearish = (price_open < filterema).all()
 
-        if low[i] == min(low[i-left:i+right+1]):
-            swings_low.append((i, low[i]))
+    if market_bullish:
+        return 'BUY'
+    elif market_bearish:
+        return 'SELL'
+    else:
+        return 'WAIT'
 
-    return swings_high, swings_low
+def get_rsi_signal(df):
+    rsi = calculate_rsi(df['close'], RSI_PERIOD)
 
-def is_higher_high_higher_low(swings_high, swings_low):
-    if len(swings_high) < 2 or len(swings_low) < 2:
-        return False
+    rsi_buy = rsi.iloc[-2] > MID_RSI_LEVEL and rsi.iloc[-2] < RSI_LIMIT_BUY
+    rsi_sell = rsi.iloc[-2] > RSI_LIMIT_SELL and rsi.iloc[-2] < MID_RSI_LEVEL
 
-    prev_high = swings_high[-2][1]
-    curr_high = swings_high[-1][1]
+    rsi_valid_buy = rsi.iloc[-2] < rsi.iloc[-1]
+    rsi_valid_sell = rsi.iloc[-2] > rsi.iloc[-1]
 
-    prev_low = swings_low[-2][1]
-    curr_low = swings_low[-1][1]
-
-    HHHL = curr_high > prev_high and curr_low > prev_low
-
-    return HHHL
-
-def is_lower_high_lower_low(swings_high, swings_low):
-    if len(swings_high) < 2 or len(swings_low) < 2:
-        return False
-
-    prev_high = swings_high[-2][1]
-    curr_high = swings_high[-1][1]
-
-    prev_low = swings_low[-2][1]
-    curr_low = swings_low[-1][1]
-
-    LHLL = curr_high < prev_high and curr_low < prev_low
-
-    return LHLL
-
+    if rsi_buy and rsi_valid_buy:
+        return 'BUY'
+    elif rsi_sell and rsi_valid_sell:
+        return 'SELL'
+    else:
+        return 'WAIT'
 
 # ===========================
 # MT5 HELPER FUNCTIONS
@@ -385,9 +317,8 @@ def main():
                 continue
             
             # GET DATA RATES
-            df = get_rates(SYMBOL, TIMEFRAME_ENTRY, n=500)
-            dfmain = get_rates(SYMBOL, TIMEFRAME_CONFIRM, n=500) 
-            if df is None or df.empty or dfmain is None or dfmain.empty:
+            df = get_rates(SYMBOL, TIMEFRAME_ENTRY, n=500)    # M1
+            if df is None or df.empty:
                 logger.warning("NO RATES RETRIEVED, RETRYING...")
                 time.sleep(POLL_SECONDS)
                 continue
@@ -408,58 +339,50 @@ def main():
                 continue
 
             # GET SIGNAL DARI INDIKATOR
-            swings_high, swings_low = detect_swings(dfmain)
-
-            if is_higher_high_higher_low(swings_high, swings_low):
-                signal_tren = "UPTREND"
-            elif is_lower_high_lower_low(swings_high, swings_low):
-                signal_tren = "DOWNTREND"
-            else:
-                signal_tren = "WAIT"
-
-            signal_ema = valid_ema_cross(df)
+            signal_tren = get_trend_signal(df)
+            signal_rsi = get_rsi_signal(df)
 
             # VALIDASI SIGNAL
-            if signal_tren == 'UPTREND' and signal_ema == 'BUY':
+            if signal_tren == 'BUY':
                 buy_signal = True
                 sell_signal = False
-            if signal_tren == 'DOWNTREND' and signal_ema == 'SELL':
+            if signal_tren == 'SELL':
                 sell_signal = True
                 buy_signal = False
 
-            # ENTRY SIGNAL BUY
-            if buy_signal and num_position < MAX_POSITIONS:
-                close = df['close']
-                v_ema = ema(close, EMA_SLOW)
-                emasl = v_ema.iloc[-1]
-                volume = LOT
-                price = ask
+            # # ENTRY SIGNAL BUY
+            # if buy_signal and num_position < MAX_POSITIONS:
+            #     close = df['close']
+            #     v_ema = ema(close, EMA_SLOW)
+            #     emasl = v_ema.iloc[-1]
+            #     volume = LOT
+            #     price = ask
   
-                sl_position = emasl
-                tp_position = price + (price - sl_position) * RR
-                place_market_order(SYMBOL, mt5.ORDER_TYPE_BUY, price, volume, sl_position, tp_position, comment="ENTRY BUY")
-                buy_signal = False
-                signal_locked = True
-                time.sleep(POLL_SECONDS)
+            #     sl_position = emasl
+            #     tp_position = price + (price - sl_position) * RR
+            #     place_market_order(SYMBOL, mt5.ORDER_TYPE_BUY, price, volume, sl_position, tp_position, comment="ENTRY BUY")
+            #     buy_signal = False
+            #     signal_locked = True
+            #     time.sleep(POLL_SECONDS)
 
-            # VALIDASI SIGNAL SELL
-            if sell_signal and num_position < MAX_POSITIONS:
-                close = df['close']
-                v_ema = ema(close, EMA_SLOW)
-                emasl = v_ema.iloc[-1]
-                volume = LOT
-                price = ask
+            # # VALIDASI SIGNAL SELL
+            # if sell_signal and num_position < MAX_POSITIONS:
+            #     close = df['close']
+            #     v_ema = ema(close, EMA_SLOW)
+            #     emasl = v_ema.iloc[-1]
+            #     volume = LOT
+            #     price = ask
   
-                sl_position = emasl
-                tp_position = price + (price - sl_position) * RR
-                place_market_order(SYMBOL, mt5.ORDER_TYPE_SELL, price, volume, sl_position, tp_position, comment="ENTRY SELL")
-                sell_signal = False
-                signal_locked = True
-                time.sleep(POLL_SECONDS)
+            #     sl_position = emasl
+            #     tp_position = price + (price - sl_position) * RR
+            #     place_market_order(SYMBOL, mt5.ORDER_TYPE_SELL, price, volume, sl_position, tp_position, comment="ENTRY SELL")
+            #     sell_signal = False
+            #     signal_locked = True
+            #     time.sleep(POLL_SECONDS)
 
             # PRINT RUNNING
             if num_position < MAX_POSITIONS:
-                logger.info("PAIR : %s | TREND : %s | CROSS EMA : %s",SYMBOL, signal_tren, signal_ema)
+                logger.info("PAIR : %s | TREND : %s | RSI : %s",SYMBOL, signal_tren, signal_rsi)
             else:
                 logger.info("POSITIONS OPEN : %s | PAIR : %s", num_position, SYMBOL)
                 clear_screen()

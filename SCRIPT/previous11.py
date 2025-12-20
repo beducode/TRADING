@@ -3,60 +3,35 @@ import pandas as pd
 import numpy as np
 import time
 import os
-import json
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 
 # ===========================
-# LOAD CONFIG JSON
-# ===========================
-with open("config.json", "r") as f:
-    CONFIG = json.load(f)
-
-# ===========================
-# MAP TIMEFRAME STRING → MT5
-# ===========================
-TF_MAP = {
-    "M1": mt5.TIMEFRAME_M1,
-    "M5": mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "M30": mt5.TIMEFRAME_M30,
-    "H1": mt5.TIMEFRAME_H1
-}
-
-# ===========================
 # USER CONFIGURATION
 # ===========================
-SYMBOL = CONFIG["symbol"]
-
-TIMEFRAME_ENTRY = TF_MAP[CONFIG["timeframe"]["entry"]]
-TIMEFRAME_CONFIRM = TF_MAP[CONFIG["timeframe"]["confirm"]]
-
-RR = CONFIG["trading"]["rr"]
-LOT = CONFIG["trading"]["lot"]
-POLL_SECONDS = CONFIG["trading"]["poll_seconds"]
-MAX_POSITIONS = CONFIG["trading"]["max_positions"]
+SYMBOL = "BTCUSDm" # XAUUSDm, ETHUSDm, BTCUSDm
+TIMEFRAME_ENTRY = mt5.TIMEFRAME_M1   # TREND ENTRY
+TIMEFRAME_CONFIRM = mt5.TIMEFRAME_M5   # TREND ENTRY
+RR = 1.0
+LOT = 0.03
+POLL_SECONDS = 1.0
+MAX_POSITIONS = 1
 
 # ===========================
-# EMA CONFIG
+# INDIKATOR CONFIGURATION
 # ===========================
-EMA_FAST = CONFIG["ema"]["fast"]
-EMA_SLOW = CONFIG["ema"]["slow"]
-EMA_TREND = CONFIG["ema"]["trend"]
 
-# ===========================
-# RSI CONFIG
-# ===========================
-RSI_PERIOD = CONFIG["rsi"]["period"]
-MID_RSI_LEVEL = CONFIG["rsi"]["mid_level"]
-RSI_LIMIT_BUY = CONFIG["rsi"]["limit_buy"]
-RSI_LIMIT_SELL = CONFIG["rsi"]["limit_sell"]
+# ---- EMA SETUP ----
+EMA_FAST = 8
+EMA_SLOW = 21
+EMA_TREND = 200
 
-# ===========================
-# PROFIT TRAILING
-# ===========================
-PROFIT_TRIGGER = CONFIG["profit_trailing"]["profit_trigger"]
+# ---- RSI SETUP ----
+RSI_PERIOD = 14
+MID_RSI_LEVEL = 50
+RSI_LIMIT_BUY = 65
+RSI_LIMIT_SELL = 35
 
 # ===========================
 # GLOBAL PARAM
@@ -64,12 +39,18 @@ PROFIT_TRIGGER = CONFIG["profit_trailing"]["profit_trigger"]
 buy_signal = False
 sell_signal = False
 signal_locked = False
+
+# ===========================
+# PROFIT TRAILING PARAM
+# ===========================
+PROFIT_TRIGGER = 1.0
 profit_peak = {}
 
 # ===========================
 # LOGING SETUP
 # ===========================
 logger = logging.getLogger("scalper")
+logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
 console = logging.StreamHandler()
 console.setFormatter(formatter)
@@ -80,80 +61,6 @@ logger.addHandler(console)
 # ===========================
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
-
-def valid_ema_cross(df):
-    close = df['close']
-    open_ = df['open']
-    high = df['high']
-    low = df['low']
-
-    emafast = ema(close, EMA_FAST)
-    emaslow = ema(close, EMA_SLOW)
-
-    # Candle sekarang & sebelumnya
-    prev = -2
-    curr = -1
-
-    # =========================
-    # 1. DETEKSI CROSS
-    # =========================
-    cross_up = emafast.iloc[prev] < emaslow.iloc[prev] and emafast.iloc[curr] > emaslow.iloc[curr]
-    cross_down = emafast.iloc[prev] > emaslow.iloc[prev] and emafast.iloc[curr] < emaslow.iloc[curr]
-
-    # =========================
-    # 2. SLOPE EMA 21
-    # =========================
-    emaslow_slope = emaslow.iloc[curr] - emaslow.iloc[prev]
-
-    uptrend = emaslow_slope > 0
-    downtrend = emaslow_slope < 0
-
-    # =========================
-    # 3. JARAK EMA (ANTI CHOPPY)
-    # =========================
-    ema_gap = abs(emafast.iloc[curr] - emaslow.iloc[curr])
-    atr_like = (high - low).rolling(14).mean().iloc[curr]
-
-    valid_gap = ema_gap > 0.1 * atr_like
-
-    # =========================
-    # 4. CANDLE KONFIRMASI
-    # =========================
-    body = abs(close.iloc[curr] - open_.iloc[curr])
-    candle_range = high.iloc[curr] - low.iloc[curr]
-
-    strong_body = body > 0.6 * candle_range
-
-    bullish_close = close.iloc[curr] > open_.iloc[curr]
-    bearish_close = close.iloc[curr] < open_.iloc[curr]
-
-    # =========================
-    # BUY SIGNAL
-    # =========================
-    if (
-        cross_up and
-        uptrend and
-        valid_gap and
-        bullish_close and
-        strong_body and
-        close.iloc[curr] > emaslow.iloc[curr]
-    ):
-        return "BUY"
-
-    # =========================
-    # SELL SIGNAL
-    # =========================
-    if (
-        cross_down and
-        downtrend and
-        valid_gap and
-        bearish_close and
-        strong_body and
-        close.iloc[curr] < emaslow.iloc[curr]
-    ):
-        return "SELL"
-
-    return 'WAIT'
 
 # ===========================
 # MT5 SIGNAL
@@ -385,9 +292,9 @@ def main():
                 continue
             
             # GET DATA RATES
-            df = get_rates(SYMBOL, TIMEFRAME_ENTRY, n=500)
-            dfmain = get_rates(SYMBOL, TIMEFRAME_CONFIRM, n=500) 
-            if df is None or df.empty or dfmain is None or dfmain.empty:
+            df = get_rates(SYMBOL, TIMEFRAME_ENTRY, n=500)    # M1
+            dfconfirm = get_rates(SYMBOL, TIMEFRAME_CONFIRM, n=500)    # M1
+            if df is None or df.empty or dfconfirm is None or dfconfirm.empty:
                 logger.warning("NO RATES RETRIEVED, RETRYING...")
                 time.sleep(POLL_SECONDS)
                 continue
@@ -408,58 +315,56 @@ def main():
                 continue
 
             # GET SIGNAL DARI INDIKATOR
-            swings_high, swings_low = detect_swings(dfmain)
+            swings_high, swings_low = detect_swings(dfconfirm)
 
             if is_higher_high_higher_low(swings_high, swings_low):
-                signal_tren = "UPTREND"
+                trend = "UPTREND"
             elif is_lower_high_lower_low(swings_high, swings_low):
-                signal_tren = "DOWNTREND"
+                trend = "DOWNTREND"
             else:
-                signal_tren = "WAIT"
+                trend = "SIDEWAYS"
 
-            signal_ema = valid_ema_cross(df)
+            # # VALIDASI SIGNAL
+            # if signal_tren == 'BUY':
+            #     buy_signal = True
+            #     sell_signal = False
+            # if signal_tren == 'SELL':
+            #     sell_signal = True
+            #     buy_signal = False
 
-            # VALIDASI SIGNAL
-            if signal_tren == 'UPTREND' and signal_ema == 'BUY':
-                buy_signal = True
-                sell_signal = False
-            if signal_tren == 'DOWNTREND' and signal_ema == 'SELL':
-                sell_signal = True
-                buy_signal = False
-
-            # ENTRY SIGNAL BUY
-            if buy_signal and num_position < MAX_POSITIONS:
-                close = df['close']
-                v_ema = ema(close, EMA_SLOW)
-                emasl = v_ema.iloc[-1]
-                volume = LOT
-                price = ask
+            # # ENTRY SIGNAL BUY
+            # if buy_signal and num_position < MAX_POSITIONS:
+            #     close = df['close']
+            #     v_ema = ema(close, EMA_SLOW)
+            #     emasl = v_ema.iloc[-1]
+            #     volume = LOT
+            #     price = ask
   
-                sl_position = emasl
-                tp_position = price + (price - sl_position) * RR
-                place_market_order(SYMBOL, mt5.ORDER_TYPE_BUY, price, volume, sl_position, tp_position, comment="ENTRY BUY")
-                buy_signal = False
-                signal_locked = True
-                time.sleep(POLL_SECONDS)
+            #     sl_position = emasl
+            #     tp_position = price + (price - sl_position) * RR
+            #     place_market_order(SYMBOL, mt5.ORDER_TYPE_BUY, price, volume, sl_position, tp_position, comment="ENTRY BUY")
+            #     buy_signal = False
+            #     signal_locked = True
+            #     time.sleep(POLL_SECONDS)
 
-            # VALIDASI SIGNAL SELL
-            if sell_signal and num_position < MAX_POSITIONS:
-                close = df['close']
-                v_ema = ema(close, EMA_SLOW)
-                emasl = v_ema.iloc[-1]
-                volume = LOT
-                price = ask
+            # # VALIDASI SIGNAL SELL
+            # if sell_signal and num_position < MAX_POSITIONS:
+            #     close = df['close']
+            #     v_ema = ema(close, EMA_SLOW)
+            #     emasl = v_ema.iloc[-1]
+            #     volume = LOT
+            #     price = ask
   
-                sl_position = emasl
-                tp_position = price + (price - sl_position) * RR
-                place_market_order(SYMBOL, mt5.ORDER_TYPE_SELL, price, volume, sl_position, tp_position, comment="ENTRY SELL")
-                sell_signal = False
-                signal_locked = True
-                time.sleep(POLL_SECONDS)
+            #     sl_position = emasl
+            #     tp_position = price + (price - sl_position) * RR
+            #     place_market_order(SYMBOL, mt5.ORDER_TYPE_SELL, price, volume, sl_position, tp_position, comment="ENTRY SELL")
+            #     sell_signal = False
+            #     signal_locked = True
+            #     time.sleep(POLL_SECONDS)
 
             # PRINT RUNNING
             if num_position < MAX_POSITIONS:
-                logger.info("PAIR : %s | TREND : %s | CROSS EMA : %s",SYMBOL, signal_tren, signal_ema)
+                logger.info("PAIR : %s | TREND : %s",SYMBOL, trend)
             else:
                 logger.info("POSITIONS OPEN : %s | PAIR : %s", num_position, SYMBOL)
                 clear_screen()
