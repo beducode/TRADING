@@ -1,6 +1,6 @@
 {
   "symbol": "BTCUSDm",
-
+  
   "timeframe": {
     "entry": "M1",
     "confirm": "M30"

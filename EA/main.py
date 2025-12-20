@@ -11,7 +11,10 @@ from datetime import datetime, timezone
 # ===========================
 # LOAD CONFIG JSON
 # ===========================
-with open("config.json", "r") as f:
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+
+with open(CONFIG_PATH, "r") as f:
     CONFIG = json.load(f)
 
 # ===========================
@@ -70,6 +73,7 @@ profit_peak = {}
 # LOGING SETUP
 # ===========================
 logger = logging.getLogger("scalper")
+logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
 console = logging.StreamHandler()
 console.setFormatter(formatter)
