@@ -3,7 +3,7 @@
   
   "timeframe": {
     "entry": "M1",
-    "confirm": "M30"
+    "confirm": "M5"
   },
 
   "trading": {
@@ -16,17 +16,14 @@
   "ema": {
     "fast": 8,
     "slow": 21,
-    "trend": 200
+    "trend": 100
   },
 
-  "rsi": {
-    "period": 14,
-    "mid_level": 50,
-    "limit_buy": 65,
-    "limit_sell": 35
+  "atr": {
+    "period": 14
   },
 
   "profit_trailing": {
-    "profit_trigger": 1.0
+    "profit_trigger": 3
   }
 }

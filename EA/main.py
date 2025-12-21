@@ -49,12 +49,9 @@ EMA_SLOW = CONFIG["ema"]["slow"]
 EMA_TREND = CONFIG["ema"]["trend"]
 
 # ===========================
-# RSI CONFIG
+# ATR CONFIG
 # ===========================
-RSI_PERIOD = CONFIG["rsi"]["period"]
-MID_RSI_LEVEL = CONFIG["rsi"]["mid_level"]
-RSI_LIMIT_BUY = CONFIG["rsi"]["limit_buy"]
-RSI_LIMIT_SELL = CONFIG["rsi"]["limit_sell"]
+ATR_PERIOD = CONFIG["atr"]["period"]
 
 # ===========================
 # PROFIT TRAILING
@@ -85,83 +82,83 @@ logger.addHandler(console)
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
 
-def valid_ema_cross(df):
+# ===========================
+# MT5 SIGNAL
+# ===========================
+def get_trend_signal(df):
+    close = df['close']
+    open = df['open']
+    fast = ema(close, EMA_FAST)
+    slow = ema(close, EMA_SLOW)
+    trend = ema(close, EMA_TREND)
+
+    price_open = open.iloc[-2]
+    emafast = fast.iloc[-2]
+    emaslow = slow.iloc[-2]
+    ematrend = trend.iloc[-2]
+    
+    market_bullish = emafast > emaslow > ematrend and price_open > ematrend
+    market_bearish = emafast < emaslow < ematrend and price_open < ematrend
+
+    if market_bullish:
+        return 'BUY'
+    elif market_bearish:
+        return 'SELL'
+    else:
+        return 'WAIT'
+    
+def atr(df):
+    tr = pd.concat([
+        df['high'] - df['low'],
+        abs(df['high'] - df['close'].shift()),
+        abs(df['low'] - df['close'].shift())
+    ], axis=1).max(axis=1)
+    return tr.rolling(ATR_PERIOD).mean()
+    
+def strong_ema_cross(df, atr):
     close = df['close']
     open_ = df['open']
     high = df['high']
     low = df['low']
 
-    emafast = ema(close, EMA_FAST)
-    emaslow = ema(close, EMA_SLOW)
+    ema8 = ema(close, EMA_FAST)
+    ema21 = ema(close, EMA_SLOW)
 
-    # Candle sekarang & sebelumnya
-    prev = -2
-    curr = -1
+    # nilai candle sebelumnya & sekarang
+    ema8_prev, ema8_curr = ema8.iloc[-2], ema8.iloc[-1]
+    ema21_prev, ema21_curr = ema21.iloc[-2], ema21.iloc[-1]
 
-    # =========================
-    # 1. DETEKSI CROSS
-    # =========================
-    cross_up = emafast.iloc[prev] < emaslow.iloc[prev] and emafast.iloc[curr] > emaslow.iloc[curr]
-    cross_down = emafast.iloc[prev] > emaslow.iloc[prev] and emafast.iloc[curr] < emaslow.iloc[curr]
+    close_curr = close.iloc[-1]
+    open_curr = open_.iloc[-1]
+    high_curr = high.iloc[-1]
+    low_curr = low.iloc[-1]
 
-    # =========================
-    # 2. SLOPE EMA 21
-    # =========================
-    emaslow_slope = emaslow.iloc[curr] - emaslow.iloc[prev]
+    # ===== CROSS =====
+    bullish_cross = ema8_prev < ema21_prev and ema8_curr > ema21_curr and close_curr > ema21_curr
+    bearish_cross = ema8_prev > ema21_prev and ema8_curr < ema21_curr and close_curr < ema21_curr
 
-    uptrend = emaslow_slope > 0
-    downtrend = emaslow_slope < 0
+    # ===== SLOPE EMA21 =====
+    ema21_slope = ema21_curr - ema21_prev
 
-    # =========================
-    # 3. JARAK EMA (ANTI CHOPPY)
-    # =========================
-    ema_gap = abs(emafast.iloc[curr] - emaslow.iloc[curr])
-    atr_like = (high - low).rolling(14).mean().iloc[curr]
+    # ===== JARAK EMA =====
+    ema_distance = abs(ema8_curr - ema21_curr)
 
-    valid_gap = ema_gap > 0.1 * atr_like
+    # ===== BODY CANDLE =====
+    body = abs(close_curr - open_curr)
+    range_ = high_curr - low_curr
+    body_ratio = body / range_ if range_ > 0 else 0
 
-    # =========================
-    # 4. CANDLE KONFIRMASI
-    # =========================
-    body = abs(close.iloc[curr] - open_.iloc[curr])
-    candle_range = high.iloc[curr] - low.iloc[curr]
+    # ===== FILTER =====
+    strong_body = body_ratio > 0.6
+    enough_distance = ema_distance > (round(atr,2) * 0.1)
+    if bullish_cross and ema21_slope > 0 and strong_body and enough_distance:
+        return 'BUY'
 
-    strong_body = body > 0.6 * candle_range
-
-    bullish_close = close.iloc[curr] > open_.iloc[curr]
-    bearish_close = close.iloc[curr] < open_.iloc[curr]
-
-    # =========================
-    # BUY SIGNAL
-    # =========================
-    if (
-        cross_up and
-        uptrend and
-        valid_gap and
-        bullish_close and
-        strong_body and
-        close.iloc[curr] > emaslow.iloc[curr]
-    ):
-        return "BUY"
-
-    # =========================
-    # SELL SIGNAL
-    # =========================
-    if (
-        cross_down and
-        downtrend and
-        valid_gap and
-        bearish_close and
-        strong_body and
-        close.iloc[curr] < emaslow.iloc[curr]
-    ):
-        return "SELL"
+    if bearish_cross and ema21_slope < 0 and strong_body and enough_distance:
+        return 'SELL'
 
     return 'WAIT'
 
-# ===========================
-# MT5 SIGNAL
-# ===========================
 def detect_swings(df, left=2, right=2):
     swings_high = []
     swings_low = []
@@ -411,23 +408,29 @@ def main():
                 close_by_retrace(position)
                 continue
 
-            # GET SIGNAL DARI INDIKATOR
+            # GET SIGNAL DARI INDIKATO
             swings_high, swings_low = detect_swings(dfmain)
 
+            #---- SIGNAL MAIN
             if is_higher_high_higher_low(swings_high, swings_low):
-                signal_tren = "UPTREND"
+                trendmain = "UPTREND"
             elif is_lower_high_lower_low(swings_high, swings_low):
-                signal_tren = "DOWNTREND"
+                trendmain = "DOWNTREND"
             else:
-                signal_tren = "WAIT"
+                trendmain = "WAIT"
 
-            signal_ema = valid_ema_cross(df)
+            #---- SIGNAL ENTRY
+            trendentry = get_trend_signal(df)
+
+            #---- CROSS EMA
+            atr_value = atr(df).iloc[-2]
+            signal_ema_cross = strong_ema_cross(df, atr_value)
 
             # VALIDASI SIGNAL
-            if signal_tren == 'UPTREND' and signal_ema == 'BUY':
+            if trendmain == 'UPTREND' and trendentry == 'BUY' and signal_ema_cross == 'BUY':
                 buy_signal = True
                 sell_signal = False
-            if signal_tren == 'DOWNTREND' and signal_ema == 'SELL':
+            if trendmain == 'DOWNTREND' and trendentry == 'SELL' and signal_ema_cross == 'SELL':
                 sell_signal = True
                 buy_signal = False
 
@@ -463,7 +466,7 @@ def main():
 
             # PRINT RUNNING
             if num_position < MAX_POSITIONS:
-                logger.info("PAIR : %s | TREND : %s | CROSS EMA : %s",SYMBOL, signal_tren, signal_ema)
+                logger.info("PAIR : %s | TM : %s | TE : %s | CROSS : %s | ATR : %s",SYMBOL, trendmain, trendentry, signal_ema_cross, round(atr_value,2))
             else:
                 logger.info("POSITIONS OPEN : %s | PAIR : %s", num_position, SYMBOL)
                 clear_screen()
