@@ -1,15 +1,15 @@
 {
-  "symbol": "BTCUSDm",
-  
+  "symbols": ["XAUUSDm", "BTCUSDm"],
+
   "timeframe": {
     "entry": "M1",
     "confirm": "M5"
   },
 
   "trading": {
-    "rr": 2.0,
-    "lot": 0.05,
-    "poll_seconds": 1.0,
+    "rr": 1,
+    "lot": 0.01,
+    "poll_seconds": 1,
     "max_positions": 1
   },
 
@@ -23,7 +23,23 @@
     "period": 14
   },
 
+  "rsi": {
+    "period": 3,
+    "rsi_high": 55,
+    "rsi_low": 45
+  },
+
+  "adx": {
+    "period": 5
+  },
+
   "profit_trailing": {
-    "profit_trigger": 3
+    "profit_trigger": 5
+  },
+
+  "trailing_stop": {
+    "enable": true,
+    "atr_multiplier": 1.5,
+    "start_profit": 1
   }
 }

@@ -1,29 +1,49 @@
 {
-  "symbol": "BTCUSDm",
-  
+  "symbols": ["XAUUSDm", "BTCUSDm"],
+
+  "risk": {
+    "percent": 1
+  },
+
+  "atr_multiplier": {
+    "sl": 1.2,
+    "tp": 2.4
+  },
+
   "timeframe": {
-    "entry": "M1",
-    "confirm": "M5"
+    "trend": "H1",
+    "sr": "M15",
+    "entry": "M1"
   },
 
-  "trading": {
-    "rr": 2.0,
-    "lot": 0.05,
-    "poll_seconds": 1.0,
-    "max_positions": 1
+  "indicator": {
+    "ema_fast": 50,
+    "ema_slow": 200,
+    "rsi_period": 14,
+    "atr_period": 14
   },
 
-  "ema": {
-    "fast": 8,
-    "slow": 21,
-    "trend": 100
+  "session": {
+    "enable": false,
+    "london": { "start": 14, "end": 23 },
+    "newyork": { "start": 19, "end": 4 }
   },
 
-  "atr": {
-    "period": 14
+  "profit_target_usd": {
+    "tp": 5.0,
+    "sl": -5.0
   },
 
-  "profit_trailing": {
-    "profit_trigger": 3
+  "news_filter": {
+    "block_hours": [
+      [19, 21],
+      [20, 22]
+    ]
+  },
+
+  "trade": {
+    "magic": 777888,
+    "deviation": 50,
+    "default_lot": 0.01
   }
 }

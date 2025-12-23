@@ -1,0 +1,27 @@
+{
+  "active_preset": "scalp",
+
+  "scalp": {
+    "timeframe": { "trend": "M15", "sr": "M5", "entry": "M1" },
+    "atr_multiplier": { "sl": 1.0, "tp": 1.8 },
+    "risk_percent": 0.5,
+    "min_rsi_buy": 52,
+    "max_rsi_sell": 48
+  },
+
+  "daytrade": {
+    "timeframe": { "trend": "H1", "sr": "M15", "entry": "M1" },
+    "atr_multiplier": { "sl": 1.2, "tp": 2.4 },
+    "risk_percent": 1.0,
+    "min_rsi_buy": 50,
+    "max_rsi_sell": 50
+  },
+
+  "swing": {
+    "timeframe": { "trend": "H4", "sr": "H1", "entry": "M15" },
+    "atr_multiplier": { "sl": 1.8, "tp": 3.5 },
+    "risk_percent": 2.0,
+    "min_rsi_buy": 48,
+    "max_rsi_sell": 52
+  }
+}

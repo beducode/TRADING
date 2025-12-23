@@ -1,12 +1,12 @@
 import MetaTrader5 as mt5
 import pandas as pd
-import numpy as np
 import time
 import os
 import json
-import logging
-from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
+from datetime import datetime
+from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator
+from ta.volatility import AverageTrueRange
 
 # ===========================
 # LOAD CONFIG JSON
@@ -17,477 +17,359 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 with open(CONFIG_PATH, "r") as f:
     CONFIG = json.load(f)
 
-# ===========================
-# MAP TIMEFRAME STRING → MT5
-# ===========================
-TF_MAP = {
-    "M1": mt5.TIMEFRAME_M1,
-    "M5": mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "M30": mt5.TIMEFRAME_M30,
-    "H1": mt5.TIMEFRAME_H1
-}
+# ======================
+# BASIC SETTINGS
+# ======================
+SYMBOLS = CONFIG["symbols"]
+MTL_ATR_LOW  = CONFIG["atr_multiplier"]["sl"]
+MTL_ATR_HIGH = CONFIG["atr_multiplier"]["tp"]
 
-# ===========================
-# USER CONFIGURATION
-# ===========================
-SYMBOL = CONFIG["symbol"]
+# ======================
+# SESSION SETTINGS (WIB) 
+# ======================
+SESSION_ENABLE = CONFIG["session"]["enable"]
+LONDON_START = CONFIG["session"]["london"]["start"]
+LONDON_END   = CONFIG["session"]["london"]["end"]
+NY_START = CONFIG["session"]["newyork"]["start"]
+NY_END   = CONFIG["session"]["newyork"]["end"]
 
-TIMEFRAME_ENTRY = TF_MAP[CONFIG["timeframe"]["entry"]]
-TIMEFRAME_CONFIRM = TF_MAP[CONFIG["timeframe"]["confirm"]]
+# ====================== 
+# PROFIT TARGET (USD) 
+# ======================
+TP_USD = CONFIG["profit_target_usd"]["tp"]
+SL_USD = CONFIG["profit_target_usd"]["sl"]
 
-RR = CONFIG["trading"]["rr"]
-LOT = CONFIG["trading"]["lot"]
-POLL_SECONDS = CONFIG["trading"]["poll_seconds"]
-MAX_POSITIONS = CONFIG["trading"]["max_positions"]
+# ================= NEWS FILTER (HIGH IMPACT TIME) =================
+NEWS_BLOCK_HOURS = CONFIG["news_filter"]["block_hours"]
 
-# ===========================
-# EMA CONFIG
-# ===========================
-EMA_FAST = CONFIG["ema"]["fast"]
-EMA_SLOW = CONFIG["ema"]["slow"]
-EMA_TREND = CONFIG["ema"]["trend"]
+class ConfigManager:
+    def __init__(self, config_file, preset_file):
+        self.config_file = config_file
+        self.preset_file = preset_file
+        self.last_config_mtime = 0
+        self.last_preset_mtime = 0
+        self.load()
 
-# ===========================
-# ATR CONFIG
-# ===========================
-ATR_PERIOD = CONFIG["atr"]["period"]
+    def load(self):
+        with open(self.config_file) as f:
+            self.config = json.load(f)
 
-# ===========================
-# PROFIT TRAILING
-# ===========================
-PROFIT_TRIGGER = CONFIG["profit_trailing"]["profit_trigger"]
+        with open(self.preset_file) as f:
+            self.presets = json.load(f)
 
-# ===========================
-# GLOBAL PARAM
-# ===========================
-buy_signal = False
-sell_signal = False
-signal_locked = False
-profit_peak = {}
+        self.active = self.presets["active_preset"]
+        self.preset = self.presets[self.active]
 
-# ===========================
-# LOGING SETUP
-# ===========================
-logger = logging.getLogger("scalper")
-logger.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
-console = logging.StreamHandler()
-console.setFormatter(formatter)
-logger.addHandler(console)
+        print(f"[CONFIG] LOADED PRESET : {self.active.upper()}")
 
-# ===========================
-# MT5 INDIKATOR
-# ===========================
-def ema(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(span=period, adjust=False).mean()
+    def reload_if_changed(self):
+        cfg_m = os.path.getmtime(self.config_file)
+        pre_m = os.path.getmtime(self.preset_file)
 
-# ===========================
-# MT5 SIGNAL
-# ===========================
-def get_trend_signal(df):
-    close = df['close']
-    open = df['open']
-    fast = ema(close, EMA_FAST)
-    slow = ema(close, EMA_SLOW)
-    trend = ema(close, EMA_TREND)
+        if cfg_m != self.last_config_mtime or pre_m != self.last_preset_mtime:
+            self.last_config_mtime = cfg_m
+            self.last_preset_mtime = pre_m
+            self.load()
 
-    price_open = open.iloc[-2]
-    emafast = fast.iloc[-2]
-    emaslow = slow.iloc[-2]
-    ematrend = trend.iloc[-2]
-    
-    market_bullish = emafast > emaslow > ematrend and price_open > ematrend
-    market_bearish = emafast < emaslow < ematrend and price_open < ematrend
+def tf(tf):
+    return {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4
+    }[tf]
 
-    if market_bullish:
-        return 'BUY'
-    elif market_bearish:
-        return 'SELL'
-    else:
-        return 'WAIT'
-    
-def atr(df):
-    tr = pd.concat([
-        df['high'] - df['low'],
-        abs(df['high'] - df['close'].shift()),
-        abs(df['low'] - df['close'].shift())
-    ], axis=1).max(axis=1)
-    return tr.rolling(ATR_PERIOD).mean()
-    
-def strong_ema_cross(df, atr):
-    close = df['close']
-    open_ = df['open']
-    high = df['high']
-    low = df['low']
+class AutoSRBot:
+    def __init__(self):
+        self.cfg = ConfigManager("config.json", "presets.json")
+        self.apply_preset()
+        self.init_mt5()
 
-    ema8 = ema(close, EMA_FAST)
-    ema21 = ema(close, EMA_SLOW)
+        self.risk_percent = CONFIG["risk"]["percent"]
 
-    # nilai candle sebelumnya & sekarang
-    ema8_prev, ema8_curr = ema8.iloc[-2], ema8.iloc[-1]
-    ema21_prev, ema21_curr = ema21.iloc[-2], ema21.iloc[-1]
+        self.tf_trend = tf(CONFIG["timeframe"]["trend"])
+        self.tf_sr    = tf(CONFIG["timeframe"]["sr"])
+        self.tf_entry = tf(CONFIG["timeframe"]["entry"])
 
-    close_curr = close.iloc[-1]
-    open_curr = open_.iloc[-1]
-    high_curr = high.iloc[-1]
-    low_curr = low.iloc[-1]
+        ind = CONFIG["indicator"]
+        self.ema_fast = ind["ema_fast"]
+        self.ema_slow = ind["ema_slow"]
+        self.rsi_period = ind["rsi_period"]
+        self.atr_period = ind["atr_period"]
 
-    # ===== CROSS =====
-    bullish_cross = ema8_prev < ema21_prev and ema8_curr > ema21_curr and close_curr > ema21_curr
-    bearish_cross = ema8_prev > ema21_prev and ema8_curr < ema21_curr and close_curr < ema21_curr
+        self.magic = CONFIG["trade"]["magic"]
+        self.deviation = CONFIG["trade"]["deviation"]
+        self.default_lot = CONFIG["trade"]["default_lot"]
 
-    # ===== SLOPE EMA21 =====
-    ema21_slope = ema21_curr - ema21_prev
+    def apply_preset(self):
+        p = self.cfg.preset
 
-    # ===== JARAK EMA =====
-    ema_distance = abs(ema8_curr - ema21_curr)
+        self.risk_percent = p["risk_percent"]
+        self.min_rsi_buy = p["min_rsi_buy"]
+        self.max_rsi_sell = p["max_rsi_sell"]
 
-    # ===== BODY CANDLE =====
-    body = abs(close_curr - open_curr)
-    range_ = high_curr - low_curr
-    body_ratio = body / range_ if range_ > 0 else 0
+        self.tf_trend = tf(p["timeframe"]["trend"])
+        self.tf_sr    = tf(p["timeframe"]["sr"])
+        self.tf_entry = tf(p["timeframe"]["entry"])
 
-    # ===== FILTER =====
-    strong_body = body_ratio > 0.6
-    enough_distance = ema_distance > (round(atr,2) * 0.1)
-    if bullish_cross and ema21_slope > 0 and strong_body and enough_distance:
-        return 'BUY'
+        self.atr_sl = p["atr_multiplier"]["sl"]
+        self.atr_tp = p["atr_multiplier"]["tp"]
+        
+    # ================= INIT =================
+    def init_mt5(self):
+        if not mt5.initialize():
+            raise RuntimeError("MT5 init failed")
+        print("[OK] MT5 Connected")
 
-    if bearish_cross and ema21_slope < 0 and strong_body and enough_distance:
-        return 'SELL'
+    # ================= TIME FILTER =================
+    def session_allowed(self):
+        hour = datetime.now().hour
 
-    return 'WAIT'
+        london = LONDON_START <= hour <= LONDON_END
+        newyork = hour >= NY_START or hour <= NY_END
 
-def detect_swings(df, left=2, right=2):
-    swings_high = []
-    swings_low = []
+        return london or newyork
 
-    for i in range(left, len(df) - right):
-        high = df['high']
-        low = df['low']
+    def news_allowed(self):
+        hour = datetime.now().hour
+        for start, end in NEWS_BLOCK_HOURS:
+            if start <= hour <= end:
+                return False
+        return True
 
-        if high[i] == max(high[i-left:i+right+1]):
-            swings_high.append((i, high[i]))
-
-        if low[i] == min(low[i-left:i+right+1]):
-            swings_low.append((i, low[i]))
-
-    return swings_high, swings_low
-
-def is_higher_high_higher_low(swings_high, swings_low):
-    if len(swings_high) < 2 or len(swings_low) < 2:
-        return False
-
-    prev_high = swings_high[-2][1]
-    curr_high = swings_high[-1][1]
-
-    prev_low = swings_low[-2][1]
-    curr_low = swings_low[-1][1]
-
-    HHHL = curr_high > prev_high and curr_low > prev_low
-
-    return HHHL
-
-def is_lower_high_lower_low(swings_high, swings_low):
-    if len(swings_high) < 2 or len(swings_low) < 2:
-        return False
-
-    prev_high = swings_high[-2][1]
-    curr_high = swings_high[-1][1]
-
-    prev_low = swings_low[-2][1]
-    curr_low = swings_low[-1][1]
-
-    LHLL = curr_high < prev_high and curr_low < prev_low
-
-    return LHLL
-
-
-# ===========================
-# MT5 HELPER FUNCTIONS
-# ===========================
-def init_mt5():
-    if not mt5.initialize():
-        logger.error("MT5 INITIALIZE() FAILED, ERROR: %s", mt5.last_error())
-        raise SystemExit("MT5 INIT FAILED")
-
-def shutdown_mt5():
-    try:
-        mt5.shutdown()
-    except Exception as e:
-        logger.exception("ERROR SHUTTING DOWN MT5: %s", e)
-
-def place_market_order(symbol, order_type, price, volume, sl_price, tp_price, deviation=20, magic=234000, comment="Market Order"):
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None:
-        logger.error("PLACE_MARKET_ORDER: SYMBOL_INFO NONE")
-        return None
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": float(volume),
-        "type": order_type,
-        "price": float(price),
-        "sl": float(sl_price) if sl_price is not None else None,
-        "tp": float(tp_price) if tp_price is not None else None,
-        "deviation": deviation,
-        "magic": magic,
-        "comment": comment,
-        "type_filling": mt5.ORDER_FILLING_FOK if symbol_info.trade_mode == mt5.SYMBOL_TRADE_MODE_FULL else mt5.ORDER_FILLING_IOC
-    }
-    try:
-        result = mt5.order_send(request)
-        if result is None:
-            logger.error("ORDER_SEND RETURNED NONE")
+    # ================= DATA =================
+    def get_df(self, symbol, tf, bars=300):
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, bars)
+        if rates is None:
             return None
-        if hasattr(result, 'retcode') and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info("BERHASIL BUKA POSISI! ORDER: %s DEAL: %s", getattr(result, 'order', None), getattr(result, 'deal', None))
-        else:
-            # Some brokers return different retcodes; log full result
-            logger.warning("GAGAL BUKA POSISI. RETCODE=%s COMMENT=%s RESULT=%s", getattr(result, 'retcode', None), getattr(result, 'comment', None), result)
-        return result
-    except Exception as e:
-        logger.exception("PLACE_MARKET_ORDER EXCEPTION: %s", e)
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        return df
+
+    # ================= TREND =================
+    def trend_bias(self, symbol):
+        df = self.get_df(symbol, self.tf_trend, 200)
+        if df is None:
+            return None
+
+        close = df['close']
+        ema_fast = EMAIndicator(close, self.ema_fast).ema_indicator().iloc[-1]
+        ema_slow = EMAIndicator(close, self.ema_slow).ema_indicator().iloc[-1]
+        rsi = RSIIndicator(close, self.rsi_period).rsi().iloc[-1]
+
+        if ema_fast > ema_slow and rsi > 50:
+            return "BUY"
+        if ema_fast < ema_slow and rsi < 50:
+            return "SELL"
         return None
-
-def is_market_closed(symbol):
-    info = mt5.symbol_info(symbol)
-    tick = get_tick(symbol)
-
-    if info is None:
-        return True
-
-    # JIKA SYMBOL TRADING DISABLED → MARKET TUTUP
-    if info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
-        return True
-
-    # JIKA TICK TIDAK ADA → MARKET TUTUP
-    if tick is None:
-        return True
-
-    # JIKA BID/ASK 0 → MARKET TUTUP
-    if tick.bid == 0 or tick.ask == 0:
-        return True
-
-    return False
-
-def close_position(position):
-    tick = get_tick(position.symbol)
-    if tick is None:
-        return False
-
-    if position.type == mt5.ORDER_TYPE_BUY:
-        price = tick.bid
-        order_type = mt5.ORDER_TYPE_SELL
-    else:
-        price = tick.ask
-        order_type = mt5.ORDER_TYPE_BUY
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": position.symbol,
-        "volume": position.volume,
-        "type": order_type,
-        "position": position.ticket,
-        "price": price,
-        "deviation": 20,
-        "magic": position.magic,
-        "comment": "CLOSE PROFIT RETRACE"
-    }
-
-    result = mt5.order_send(request)
-    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-        logger.info("POSITION CLOSED | TICKET=%s | PROFIT=%.2f", position.ticket, position.profit)
-        return True
-    else:
-        logger.warning("FAILED CLOSE POSITION | TICKET=%s", position.ticket)
-        return False
     
-def close_by_retrace(position):
-    global signal_locked
-    # ===========================
-    # PROFIT RETRACEMENT CHECK
-    # ===========================
-    for pos in position:
-        ticket = pos.ticket
-        current_profit = pos.profit
+    # ================== ENTRY CONFIRM (M1) ==================
+    def volume_spike(self, df):
+        return df['tick_volume'].iloc[-1] > df['tick_volume'].rolling(20).mean().iloc[-1] * MTL_ATR_LOW
 
-        # SIMPAN PROFIT TERTINGGI
-        if ticket not in profit_peak:
-            profit_peak[ticket] = current_profit
-        else:
-            profit_peak[ticket] = max(profit_peak[ticket], current_profit)
+    def bullish_rejection(self, df):
+        c = df.iloc[-1]
+        body = abs(c.close - c.open)
+        lower_wick = min(c.open, c.close) - c.low
+        return lower_wick > body * MTL_ATR_LOW
 
-        # KONDISI CLOSE
-        if profit_peak[ticket] > PROFIT_TRIGGER and current_profit < PROFIT_TRIGGER:
-            logger.info(
-                "PROFIT RETRACE DETECTED | TICKET=%s | PEAK=%.2f | NOW=%.2f",
-                ticket, profit_peak[ticket], current_profit
-            )
-            close_position(pos)
-            profit_peak.pop(ticket, None)
-            signal_locked = False
+    def bearish_rejection(self, df):
+        c = df.iloc[-1]
+        body = abs(c.close - c.open)
+        upper_wick = c.high - max(c.open, c.close)
+        return upper_wick > body * MTL_ATR_LOW
 
-def get_rates(symbol, timeframe, n=500):
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n)
-    if rates is None:
-        return None
-    df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
-    return df
+    # ================= S/R =================
+    def sr_zones(self, symbol):
+        df = self.get_df(symbol, self.tf_sr, 200)
+        if df is None:
+            return [], [], None
 
-def get_tick(symbol):
-    try:
-        return mt5.symbol_info_tick(symbol)
-    except Exception:
-        return None
+        atr = AverageTrueRange(df['high'], df['low'], df['close'], self.atr_period)\
+            .average_true_range().iloc[-1]
 
-def symbol_info_check(symbol):
-    info = mt5.symbol_info(symbol)
-    if info is None:
-        raise RuntimeError(f"{symbol} NOT FOUND IN MARKET WATCH")
-    if not info.visible:
-        mt5.symbol_select(symbol, True)
-    return info
+        supports, resistances = [], []
 
-def positions_for_symbol(symbol):
-    pos = mt5.positions_get(symbol=symbol)
-    if pos is None or len(pos) == 0:
-        return []
-    return list(pos)
+        for i in range(2, len(df)-2):
+            if df['low'][i] < df['low'][i-1] and df['low'][i] < df['low'][i+1]:
+                supports.append(df['low'][i])
+            if df['high'][i] > df['high'][i-1] and df['high'][i] > df['high'][i+1]:
+                resistances.append(df['high'][i])
 
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+        sup_z = [(s-atr*0.3, s+atr*0.3) for s in set(supports)]
+        res_z = [(r-atr*0.3, r+atr*0.3) for r in set(resistances)]
 
-# ===========================
-# MAIN LOOP
-# ===========================
-def main():
-    global buy_signal, sell_signal, signal_locked
-
-    init_mt5()
-    try:
-        symbol_info_check(SYMBOL)
-    except Exception as e:
-        logger.exception("SYMBOL CHECK ERROR: %s", e)
-        shutdown_mt5()
-        return
-
-    clear_screen()
-    logger.info("STARTING SCALPER FOR %s M1 — %s", SYMBOL, datetime.now().isoformat())
-
-    while True:
+        return sup_z, res_z, atr
+    
+    def close_position(self, pos):
         try:
-            # CEK MARKET CLOSE
-            if is_market_closed(SYMBOL):
-                logger.warning("MARKET CLOSED FOR %s — WAITING 1 HOURS...", SYMBOL)
-                time.sleep(3600)  # 1 jam = 3600 detik
-                continue
-            
-            # GET DATA RATES
-            df = get_rates(SYMBOL, TIMEFRAME_ENTRY, n=500)
-            dfmain = get_rates(SYMBOL, TIMEFRAME_CONFIRM, n=500) 
-            if df is None or df.empty or dfmain is None or dfmain.empty:
-                logger.warning("NO RATES RETRIEVED, RETRYING...")
-                time.sleep(POLL_SECONDS)
-                continue
-
-            # CHECK CURRENT POSITIONS
-            position = positions_for_symbol(SYMBOL)
-            num_position = len(position)
-
-            tick = get_tick(SYMBOL)
-            if tick is None:
-                time.sleep(POLL_SECONDS)
-                continue
-            bid = tick.bid
-            ask = tick.ask
-
-            if signal_locked or num_position > 0:
-                close_by_retrace(position)
-                continue
-
-            # GET SIGNAL DARI INDIKATO
-            swings_high, swings_low = detect_swings(dfmain)
-
-            #---- SIGNAL MAIN
-            if is_higher_high_higher_low(swings_high, swings_low):
-                trendmain = "UPTREND"
-            elif is_lower_high_lower_low(swings_high, swings_low):
-                trendmain = "DOWNTREND"
+            symbol = pos.symbol
+            volume = pos.volume
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                order_type = mt5.ORDER_TYPE_SELL
+                price = mt5.symbol_info_tick(symbol).bid
             else:
-                trendmain = "WAIT"
+                order_type = mt5.ORDER_TYPE_BUY
+                price = mt5.symbol_info_tick(symbol).ask
 
-            #---- SIGNAL ENTRY
-            trendentry = get_trend_signal(df)
-
-            #---- CROSS EMA
-            atr_value = atr(df).iloc[-2]
-            signal_ema_cross = strong_ema_cross(df, atr_value)
-
-            # VALIDASI SIGNAL
-            if trendmain == 'UPTREND' and trendentry == 'BUY' and signal_ema_cross == 'BUY':
-                buy_signal = True
-                sell_signal = False
-            if trendmain == 'DOWNTREND' and trendentry == 'SELL' and signal_ema_cross == 'SELL':
-                sell_signal = True
-                buy_signal = False
-
-            # ENTRY SIGNAL BUY
-            if buy_signal and num_position < MAX_POSITIONS:
-                close = df['close']
-                v_ema = ema(close, EMA_SLOW)
-                emasl = v_ema.iloc[-1]
-                volume = LOT
-                price = ask
-  
-                sl_position = emasl
-                tp_position = price + (price - sl_position) * RR
-                place_market_order(SYMBOL, mt5.ORDER_TYPE_BUY, price, volume, sl_position, tp_position, comment="ENTRY BUY")
-                buy_signal = False
-                signal_locked = True
-                time.sleep(POLL_SECONDS)
-
-            # VALIDASI SIGNAL SELL
-            if sell_signal and num_position < MAX_POSITIONS:
-                close = df['close']
-                v_ema = ema(close, EMA_SLOW)
-                emasl = v_ema.iloc[-1]
-                volume = LOT
-                price = ask
-  
-                sl_position = emasl
-                tp_position = price + (price - sl_position) * RR
-                place_market_order(SYMBOL, mt5.ORDER_TYPE_SELL, price, volume, sl_position, tp_position, comment="ENTRY SELL")
-                sell_signal = False
-                signal_locked = True
-                time.sleep(POLL_SECONDS)
-
-            # PRINT RUNNING
-            if num_position < MAX_POSITIONS:
-                logger.info("PAIR : %s | TM : %s | TE : %s | CROSS : %s | ATR : %s",SYMBOL, trendmain, trendentry, signal_ema_cross, round(atr_value,2))
-            else:
-                logger.info("POSITIONS OPEN : %s | PAIR : %s", num_position, SYMBOL)
-                clear_screen()
-            
-            # RESET GLOBAL PARAM
-            if num_position == 0 and signal_locked:
-                buy_signal = False
-                sell_signal = False
-                signal_locked = False
-                profit_peak.clear()
-
-            time.sleep(POLL_SECONDS)
-
-        except KeyboardInterrupt:
-            logger.info("INTERRUPTED BY USER. SHUTTING DOWN.")
-            break
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": float(volume),
+                "type": order_type,
+                "price": float(price),
+                "position": int(pos.ticket),
+                "deviation": 50,
+                "magic": 234000,
+                "comment": "AutoClose",
+                "type_filling": mt5.ORDER_FILLING_IOC
+            }
+            res = mt5.order_send(request)
+            print(f"CLOSE_POSITION RESULT :{res}")
+            return res
         except Exception as e:
-            logger.exception("EXCEPTION IN MAIN LOOP: %s", e)
-            time.sleep(1)
+            print(f"CLOSE_POSITION EXCEPTION :{e}")
+            return None
+    
+    def manage_profit_usd(self, symbol, tp_usd, sl_usd):
+        positions = mt5.positions_get(symbol=symbol)
+        if not positions:
+            return
 
-    shutdown_mt5()
+        total_profit = sum(p.profit for p in positions)
 
+        if total_profit >= tp_usd:
+            print(f"TP USD HIT : {symbol} | PROFIT : {total_profit:.2f} USD")
+            for p in positions:
+                self.close_position(p)
+
+        if total_profit <= sl_usd:
+            print(f"SL USD HIT : {symbol} | LOSS : {total_profit:.2f} USD")
+            for p in positions:
+                self.close_position(p)
+
+    # ================= SIGNAL =================
+    def signal(self, symbol):
+        if self.has_open_position(symbol):
+            return None, None
+
+        if SESSION_ENABLE:
+            if not self.session_allowed() or not self.news_allowed():
+                return None, None
+
+        bias = self.trend_bias(symbol)
+        if not bias:
+            return None, None
+
+        df = self.get_df(symbol, self.tf_entry, 120)
+        if df is None:
+            return None, None
+
+        price = df['close'].iloc[-1]
+        rsi = RSIIndicator(df['close'], self.rsi_period).rsi().iloc[-1]
+
+        sup, res, atr = self.sr_zones(symbol)
+
+        volspike = self.volume_spike(df)
+        bullish_reject = self.bullish_rejection(df)
+        bearish_reject = self.bearish_rejection(df)
+
+        if bias == 'BUY':
+            print(f"PAIR : {symbol} | TREND : {bias} | RSI : {rsi:.2f} | VOLUME : {volspike} | BULLISH : {bullish_reject}")
+        else:
+            print(f"PAIR : {symbol} | TREND : {bias} | RSI : {rsi:.2f} | VOLUME : {volspike} | BEARISH : {bullish_reject}")
+        
+        if bias == "BUY":
+            for l, h in sup:
+                if (
+                    l <= price <= h and
+                    rsi > self.min_rsi_buy and
+                    volspike and
+                    bullish_reject
+                ):
+                    return "BUY", atr
+
+        if bias == "SELL":
+            for l, h in res:
+                if (
+                    l <= price <= h and
+                    rsi < self.max_rsi_sell and
+                    volspike and
+                    bearish_reject
+                ):
+                    return "SELL", atr
+
+        return None, None
+
+    # ================= LOT =================
+    def calc_lot(self, symbol, atr):
+        acc = mt5.account_info()
+        sym = mt5.symbol_info(symbol)
+
+        risk_money = acc.balance * (self.risk_percent / 100)
+        sl_points = atr / sym.point
+        lot = risk_money / (sl_points * sym.trade_tick_value)
+        return round(max(sym.volume_min, min(lot, sym.volume_max)), 2)
+
+    # ================= ORDER =================
+    def open_trade(self, symbol, side, atr):
+        if self.has_open_position(symbol):
+            self.manage_profit_usd(symbol, TP_USD, SL_USD)
+            return
+
+        tick = mt5.symbol_info_tick(symbol)
+        price = tick.ask if side == "BUY" else tick.bid
+
+        sl = price - atr*MTL_ATR_LOW if side == "BUY" else price + atr*MTL_ATR_LOW
+        tp = price + atr*MTL_ATR_HIGH if side == "BUY" else price - atr*MTL_ATR_HIGH
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": self.default_lot,
+            "type": mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": "AUTO_SR_MTF_JSON"
+        }
+
+
+        mt5.order_send(request)
+        print(f"[OPEN] {symbol} {side}")
+
+    def has_open_position(self, symbol):
+        positions = mt5.positions_get(symbol=symbol)
+        return positions is not None and len(positions) > 0
+
+    def clear_screen(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
+
+    # ================= RUN =================
+    def run(self):
+        print("[TRADE BOT BY BEDUCODE IS RUNNING]")
+        print("=================================")
+        while True:
+            try:
+                self.cfg.reload_if_changed()
+                self.apply_preset()
+
+                for symbol in SYMBOLS:
+                    side, atr = self.signal(symbol)
+                    if side:
+                        self.open_trade(symbol, side, atr)
+
+                time.sleep(1)
+
+            except Exception as e:
+                print("ERROR:", e)
+                time.sleep(1)
+
+# ================= START =================
 if __name__ == "__main__":
-    main()
+    bot = AutoSRBot()
+    bot.clear_screen()
+    bot.run()
