@@ -1,5 +1,5 @@
 {
-  "symbols": ["XAUUSDm", "BTCUSDm"],
+  "symbols": ["BTCUSDm"],
 
   "risk": {
     "percent": 1
@@ -30,8 +30,8 @@
   },
 
   "profit_target_usd": {
-    "tp": 5.0,
-    "sl": -5.0
+    "tp": 1.0,
+    "sl": -1.0
   },
 
   "news_filter": {

@@ -42,36 +42,7 @@ SL_USD = CONFIG["profit_target_usd"]["sl"]
 # ================= NEWS FILTER (HIGH IMPACT TIME) =================
 NEWS_BLOCK_HOURS = CONFIG["news_filter"]["block_hours"]
 
-class ConfigManager:
-    def __init__(self, config_file, preset_file):
-        self.config_file = config_file
-        self.preset_file = preset_file
-        self.last_config_mtime = 0
-        self.last_preset_mtime = 0
-        self.load()
-
-    def load(self):
-        with open(self.config_file) as f:
-            self.config = json.load(f)
-
-        with open(self.preset_file) as f:
-            self.presets = json.load(f)
-
-        self.active = self.presets["active_preset"]
-        self.preset = self.presets[self.active]
-
-        print(f"[CONFIG] LOADED PRESET : {self.active.upper()}")
-
-    def reload_if_changed(self):
-        cfg_m = os.path.getmtime(self.config_file)
-        pre_m = os.path.getmtime(self.preset_file)
-
-        if cfg_m != self.last_config_mtime or pre_m != self.last_preset_mtime:
-            self.last_config_mtime = cfg_m
-            self.last_preset_mtime = pre_m
-            self.load()
-
-def tf(tf):
+def tf_map(tf):
     return {
         "M1": mt5.TIMEFRAME_M1,
         "M5": mt5.TIMEFRAME_M5,
@@ -82,40 +53,24 @@ def tf(tf):
 
 class AutoSRBot:
     def __init__(self):
-        self.cfg = ConfigManager("config.json", "presets.json")
-        self.apply_preset()
-        self.init_mt5()
-
         self.risk_percent = CONFIG["risk"]["percent"]
 
-        self.tf_trend = tf(CONFIG["timeframe"]["trend"])
-        self.tf_sr    = tf(CONFIG["timeframe"]["sr"])
-        self.tf_entry = tf(CONFIG["timeframe"]["entry"])
+        self.tf_trend = tf_map(CONFIG["timeframe"]["trend"])
+        self.tf_slow    = tf_map(CONFIG["timeframe"]["sr"])
+        self.tf_fast = tf_map(CONFIG["timeframe"]["entry"])
 
-        ind = CONFIG["indicator"]
-        self.ema_fast = ind["ema_fast"]
-        self.ema_slow = ind["ema_slow"]
-        self.rsi_period = ind["rsi_period"]
-        self.atr_period = ind["atr_period"]
+        cfg = CONFIG["indicator"]
+        self.ema_fast = cfg["ema_fast"]
+        self.ema_slow = cfg["ema_slow"]
+        self.rsi_period = cfg["rsi_period"]
+        self.atr_period = cfg["atr_period"]
 
         self.magic = CONFIG["trade"]["magic"]
         self.deviation = CONFIG["trade"]["deviation"]
         self.default_lot = CONFIG["trade"]["default_lot"]
 
-    def apply_preset(self):
-        p = self.cfg.preset
+        self.init_mt5()
 
-        self.risk_percent = p["risk_percent"]
-        self.min_rsi_buy = p["min_rsi_buy"]
-        self.max_rsi_sell = p["max_rsi_sell"]
-
-        self.tf_trend = tf(p["timeframe"]["trend"])
-        self.tf_sr    = tf(p["timeframe"]["sr"])
-        self.tf_entry = tf(p["timeframe"]["entry"])
-
-        self.atr_sl = p["atr_multiplier"]["sl"]
-        self.atr_tp = p["atr_multiplier"]["tp"]
-        
     # ================= INIT =================
     def init_mt5(self):
         if not mt5.initialize():
@@ -149,45 +104,44 @@ class AutoSRBot:
 
     # ================= TREND =================
     def trend_bias(self, symbol):
-        df = self.get_df(symbol, self.tf_trend, 200)
+        df = self.get_df(symbol, self.tf_trend, 500)
         if df is None:
             return None
 
         close = df['close']
-        ema_fast = EMAIndicator(close, self.ema_fast).ema_indicator().iloc[-1]
-        ema_slow = EMAIndicator(close, self.ema_slow).ema_indicator().iloc[-1]
-        rsi = RSIIndicator(close, self.rsi_period).rsi().iloc[-1]
+        ema_fast = EMAIndicator(close, self.ema_fast).ema_indicator().iloc[-2]
+        ema_slow = EMAIndicator(close, self.ema_slow).ema_indicator().iloc[-2]
 
-        if ema_fast > ema_slow and rsi > 50:
+        if ema_fast > ema_slow: #and curr_rsi > 50 and curr_rsi > prev_rsi:
             return "BUY"
-        if ema_fast < ema_slow and rsi < 50:
+        if ema_fast < ema_slow: #and curr_rsi < 50 and curr_rsi < prev_rsi:
             return "SELL"
-        return None
+        return 'WAIT'
     
     # ================== ENTRY CONFIRM (M1) ==================
     def volume_spike(self, df):
-        return df['tick_volume'].iloc[-1] > df['tick_volume'].rolling(20).mean().iloc[-1] * MTL_ATR_LOW
+        return df['tick_volume'].iloc[-2] > df['tick_volume'].rolling(20).mean().iloc[-2] * MTL_ATR_LOW
 
     def bullish_rejection(self, df):
-        c = df.iloc[-1]
+        c = df.iloc[-2]
         body = abs(c.close - c.open)
         lower_wick = min(c.open, c.close) - c.low
         return lower_wick > body * MTL_ATR_LOW
 
     def bearish_rejection(self, df):
-        c = df.iloc[-1]
+        c = df.iloc[-2]
         body = abs(c.close - c.open)
         upper_wick = c.high - max(c.open, c.close)
         return upper_wick > body * MTL_ATR_LOW
 
     # ================= S/R =================
     def sr_zones(self, symbol):
-        df = self.get_df(symbol, self.tf_sr, 200)
+        df = self.get_df(symbol, self.tf_slow, 500)
         if df is None:
             return [], [], None
 
         atr = AverageTrueRange(df['high'], df['low'], df['close'], self.atr_period)\
-            .average_true_range().iloc[-1]
+            .average_true_range().iloc[-2]
 
         supports, resistances = [], []
 
@@ -252,6 +206,7 @@ class AutoSRBot:
     # ================= SIGNAL =================
     def signal(self, symbol):
         if self.has_open_position(symbol):
+            self.manage_profit_usd(symbol, TP_USD, SL_USD)
             return None, None
 
         if SESSION_ENABLE:
@@ -262,7 +217,7 @@ class AutoSRBot:
         if not bias:
             return None, None
 
-        df = self.get_df(symbol, self.tf_entry, 120)
+        df = self.get_df(symbol, self.tf_fast, 500)
         if df is None:
             return None, None
 
@@ -279,25 +234,15 @@ class AutoSRBot:
             print(f"PAIR : {symbol} | TREND : {bias} | RSI : {rsi:.2f} | VOLUME : {volspike} | BULLISH : {bullish_reject}")
         else:
             print(f"PAIR : {symbol} | TREND : {bias} | RSI : {rsi:.2f} | VOLUME : {volspike} | BEARISH : {bullish_reject}")
-        
+
         if bias == "BUY":
             for l, h in sup:
-                if (
-                    l <= price <= h and
-                    rsi > self.min_rsi_buy and
-                    volspike and
-                    bullish_reject
-                ):
+                if l <= price <= h and rsi > 50 and volspike and bullish_reject:
                     return "BUY", atr
 
         if bias == "SELL":
             for l, h in res:
-                if (
-                    l <= price <= h and
-                    rsi < self.max_rsi_sell and
-                    volspike and
-                    bearish_reject
-                ):
+                if l <= price <= h and rsi < 50 and volspike and bearish_reject:
                     return "SELL", atr
 
         return None, None
@@ -315,7 +260,6 @@ class AutoSRBot:
     # ================= ORDER =================
     def open_trade(self, symbol, side, atr):
         if self.has_open_position(symbol):
-            self.manage_profit_usd(symbol, TP_USD, SL_USD)
             return
 
         tick = mt5.symbol_info_tick(symbol)
@@ -354,9 +298,6 @@ class AutoSRBot:
         print("=================================")
         while True:
             try:
-                self.cfg.reload_if_changed()
-                self.apply_preset()
-
                 for symbol in SYMBOLS:
                     side, atr = self.signal(symbol)
                     if side:
