@@ -1,5 +1,5 @@
 {
-  "symbols": ["BTCUSDm"],
+  "symbols": ["XAUUSDm"],
 
   "risk": {
     "percent": 1
@@ -11,14 +11,14 @@
   },
 
   "timeframe": {
-    "trend": "H1",
+    "trend": "M30",
     "sr": "M15",
-    "entry": "M1"
+    "entry": "M5"
   },
 
   "indicator": {
-    "ema_fast": 50,
-    "ema_slow": 200,
+    "ema_fast": 9,
+    "ema_slow": 21,
     "rsi_period": 14,
     "atr_period": 14
   },
@@ -27,11 +27,6 @@
     "enable": false,
     "london": { "start": 14, "end": 23 },
     "newyork": { "start": 19, "end": 4 }
-  },
-
-  "profit_target_usd": {
-    "tp": 1.0,
-    "sl": -1.0
   },
 
   "news_filter": {
@@ -45,5 +40,12 @@
     "magic": 777888,
     "deviation": 50,
     "default_lot": 0.01
+  },
+
+  "trailing": {
+      "enable": true,
+      "atr_multiplier": 0.5,
+      "min_distance": 10,
+      "step": 0.5                
   }
 }
