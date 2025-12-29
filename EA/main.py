@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import os
 import json
+import math
 from datetime import datetime
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
@@ -46,6 +47,27 @@ def tf_map(tf):
         "H4": mt5.TIMEFRAME_H4
     }[tf]
 
+class SwingDetector:
+    def __init__(self, lookback=3):
+        self.lookback = lookback
+
+    def detect(self, highs, lows):
+        swing_high = None
+        swing_low = None
+
+        if len(highs) < self.lookback * 2:
+            return None, None
+
+        i = -self.lookback - 1
+
+        if highs.iloc[i] == max(highs.iloc[i-self.lookback:i+self.lookback]):
+            swing_high = highs.iloc[i]
+
+        if lows.iloc[i] == min(lows.iloc[i-self.lookback:i+self.lookback]):
+            swing_low = lows.iloc[i]
+
+        return swing_high, swing_low
+    
 class AutoSRBot:
     def __init__(self):
         self.risk_percent = CONFIG["risk"]["percent"]
@@ -162,69 +184,83 @@ class AutoSRBot:
             print(f"CLOSE_POSITION EXCEPTION :{e}")
             return None
 
-    def trailing_management(self, symbol):
-        if not CONFIG["trailing"]["enable"]:
-            return
+    def fibonacci_levels(self, low, high):
+        diff = high - low
+        return {
+            "0.382": high - diff * 0.382,
+            "0.5": high - diff * 0.5,
+            "0.618": high - diff * 0.618,
+            "1.0": high,
+            "1.272": high + diff * 0.272,
+            "1.618": high + diff * 0.618,
+        }
+    
+    def trailing_stop_fib_buy(
+        price,
+        entry,
+        current_sl,
+        fib_levels
+    ):
+        new_sl = current_sl
 
-        positions = mt5.positions_get(symbol=symbol)
-        if not positions:
-            return
+        if price >= fib_levels["1.0"]:
+            new_sl = max(new_sl, entry)
 
-        for pos in positions:
-            tick = mt5.symbol_info_tick(symbol)
-            atr_val = AverageTrueRange(
-                self.get_df(symbol, self.tf_fast, 500)['high'],
-                self.get_df(symbol, self.tf_fast, 500)['low'],
-                self.get_df(symbol, self.tf_fast, 500)['close'],
-                self.atr_period
-            ).average_true_range().iloc[-1]
+        if price >= fib_levels["1.272"]:
+            new_sl = max(new_sl, fib_levels["0.382"])
 
-            trail_distance = CONFIG["trailing"]["atr_multiplier"] * atr_val
-            min_distance = CONFIG["trailing"]["min_distance"] * mt5.symbol_info(symbol).point
+        if price >= fib_levels["1.618"]:
+            new_sl = max(new_sl, fib_levels["0.5"])
 
-            # BUY POSITION
-            if pos.type == mt5.POSITION_TYPE_BUY:
-                new_sl = tick.bid - trail_distance
-                if pos.sl is None or new_sl > pos.sl + min_distance:
-                    request = {
-                        "action": mt5.TRADE_ACTION_SLTP,
-                        "position": pos.ticket,
-                        "sl": new_sl,
-                        "tp": pos.tp
-                    }
-                    mt5.order_send(request)
-                    print(f"[TRAILING STOP] {symbol} BUY | Old SL: {pos.sl} | New SL: {new_sl:.5f}")
+        return new_sl
+    
+    def trailing_stop_fib_sell(
+        price,
+        entry,
+        current_sl,
+        fib_low,
+        fib_high
+    ):
+        diff = fib_high - fib_low
 
-            # SELL POSITION
-            elif pos.type == mt5.POSITION_TYPE_SELL:
-                new_sl = tick.ask + trail_distance
-                if pos.sl is None or new_sl < pos.sl - min_distance:
-                    request = {
-                        "action": mt5.TRADE_ACTION_SLTP,
-                        "position": pos.ticket,
-                        "sl": new_sl,
-                        "tp": pos.tp
-                    }
-                    mt5.order_send(request)
-                    print(f"[TRAILING STOP] {symbol} SELL | Old SL: {pos.sl} | New SL: {new_sl:.5f}")
+        tp1 = fib_low
+        tp2 = fib_low - diff * 0.272
+        tp3 = fib_low - diff * 0.618
 
+        sl_382 = fib_low + diff * 0.382
+        sl_5 = fib_low + diff * 0.5
+
+        new_sl = current_sl
+
+        if price <= tp1:
+            new_sl = min(new_sl, entry)
+
+        if price <= tp2:
+            new_sl = min(new_sl, sl_382)
+
+        if price <= tp3:
+            new_sl = min(new_sl, sl_5)
+
+        return new_sl
+
+    
 
     # ================= SIGNAL =================
     def signal(self, symbol):
         if self.has_open_position(symbol):
-            return None, None, None, None
+            return None, None, None, None, None
 
         if SESSION_ENABLE:
             if not self.session_allowed() or not self.news_allowed():
-                return None, None, None, None
+                return None, None, None, None, None
 
         bias = self.trend(symbol)
         if not bias:
-            return None, None, None, None
+            return None, None, None, None, None
 
         df = self.get_df(symbol, self.tf_fast, 500)
         if df is None:
-            return None, None, None, None
+            return None, None, None, None, None
         
         close = df['close'].iloc[-2]
         open = df['open'].iloc[-2]
@@ -235,6 +271,8 @@ class AutoSRBot:
         price = df['close'].iloc[-1]
         atr_val = AverageTrueRange(df['high'], df['low'], df['close'], self.atr_period).average_true_range()
         rsi = RSIIndicator(df['close'], self.rsi_period).rsi()
+
+        support, resistance = self.get_sr(symbol)
 
         body = abs(close - open)
         range_ = high - low
@@ -268,26 +306,52 @@ class AutoSRBot:
             bias == "BUY"
             and bullish
         ):
-            return "BUY", price, prev_price, atr_val.iloc[-1]
+            return "BUY", price, support, resistance, atr_val.iloc[-1]
 
         # SELL SETUP
         if (
             bias == "SELL"
             and bearish
         ):
-            return "SELL", price, prev_price, atr_val.iloc[-1]
+            return "SELL", price, support, resistance, atr_val.iloc[-1]
 
-        return None, None, None, None
+        return None, None, None, None, None
+    
+    # SUPPORT / RESISTANCE (HTF & LTF)
+    def find_sr(self, df):
+        support, resistance = [], []
+
+        for i in range(1, len(df) - 1):
+            if df['low'][i] < df['low'][i-1] and df['low'][i] < df['low'][i+1]:
+                support.append(df['low'][i])
+
+            if df['high'][i] > df['high'][i-1] and df['high'][i] > df['high'][i+1]:
+                resistance.append(df['high'][i])
+
+        return support, resistance
+    
+    # MULTI-TIMEFRAME LOGIC
+    def get_sr(self, symbol):
+        df = self.get_df(symbol, self.tf_slow, 10)
+        if df is None:
+            return [], [], None
+
+        sup_dt, res_dt = self.find_sr(df)
+
+        sup = min(sup_dt)
+        res = max(res_dt)
+
+        return sup, res
     
     # SL & TP (ATR + STRUCTURE)
-    def sl_tp(self, signal, price, atr_val, prev_price):
+    def sl_tp(self, signal, price, atr_val, support, resistance):
         if signal == "BUY":
-            sl = prev_price - atr_val * 0.5
+            sl = support - atr_val * 0.5
             tp = price + atr_val * 2
             return sl, tp
 
         if signal == "SELL":
-            sl = prev_price + atr_val * 0.5
+            sl = resistance + atr_val * 0.5
             tp = price - atr_val * 2
             return sl, tp
 
@@ -332,11 +396,11 @@ class AutoSRBot:
         while True:
             try:
                 for symbol in SYMBOLS:
-                    side, price, prev_price, atr = self.signal(symbol)
+                    side, price, sup, res, atr = self.signal(symbol)
                     if side:
-                        sl, tp = self.sl_tp(side, price, atr, prev_price)
+                        sl, tp = self.sl_tp(side, price, atr, sup, res)
                         self.open_trade(symbol, side, sl, tp)
-
+                    
                 time.sleep(1)
 
             except Exception as e:
