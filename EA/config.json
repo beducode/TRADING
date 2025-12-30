@@ -1,44 +1,27 @@
 {
-  "symbols": ["XAUUSDm"],
+  "symbol": "XAUUSDm",
+  "timeframe": "M5",
+  "lot": 0.01,
 
-  "risk": {
-    "percent": 1
+  "ema_fast": 20,
+  "ema_slow": 50,
+  "rsi_period": 14,
+  "atr_period": 14,
+
+  "rsi_buy": 55,
+  "rsi_sell": 45,
+
+  "body_ratio_min": 0.75,
+  "atr_multiplier": 1.2,
+
+  "rr_tp1": 0.5,
+  "rr_tp2": 1,
+  "partial_ratio": 0.5,
+
+  "anti_choppy": {
+    "ema_distance_atr_ratio": 0.2,
+    "atr_ratio_min": 0.8
   },
 
-  "atr_multiplier": {
-    "sl": 1.2,
-    "tp": 2.4
-  },
-
-  "timeframe": {
-    "trend": "M30",
-    "sr": "M15",
-    "entry": "M5"
-  },
-
-  "indicator": {
-    "ema_fast": 9,
-    "ema_slow": 21,
-    "rsi_period": 14,
-    "atr_period": 14
-  },
-
-  "session": {
-    "enable": false,
-    "london": { "start": 14, "end": 23 },
-    "newyork": { "start": 19, "end": 4 }
-  },
-
-  "news_filter": {
-    "block_hours": [
-      [19, 21],
-      [20, 22]
-    ]
-  },
-
-  "trade": {
-    "magic": 777888,
-    "deviation": 50,
-    "default_lot": 0.01
-  }
+  "magic": 20251230
 }
