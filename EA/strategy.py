@@ -137,19 +137,7 @@ class MomentumBreakoutStrategy:
         df["atr_avg_20"] = df["atr"].rolling(20).mean()
 
         return df
-
-    # =========================
-    # ANTI CHOPPY
-    # =========================
-    def anti_choppy(self, row):
-        if row["atr"] < row["atr_avg_20"] * self.cfg["anti_choppy"]["atr_ratio_min"]:
-            return False
-
-        if abs(row["ema_fast"] - row["ema_slow"]) < row["atr"] * self.cfg["anti_choppy"]["ema_distance_atr_ratio"]:
-            return False
-
-        return True
-
+    
     # =========================
     # STRONG CANDLE
     # =========================
@@ -184,19 +172,14 @@ class MomentumBreakoutStrategy:
         direction = self.strong_candle(prev)
         if not direction:
             return None
-        
-        antichoppy = self.anti_choppy(prev)
-        if not antichoppy:
-            return None
 
         tick = mt5.symbol_info_tick(self.cfg["symbol"])
 
         # BUY
         if (trend_tf == "BULLISH" and
             direction == "BULLISH" and
-            prev["close"] > prev["ema_fast"] > prev["ema_slow"] and
-            prev["rsi"] > self.cfg["rsi_buy"] and
-            tick.ask > prev["high"]):
+            prev["close"] > prev["ema_slow"] and
+            prev["rsi"] > self.cfg["rsi_buy"]):
 
             entry = tick.ask
             sl = (prev["open"] + prev["close"]) / 2
@@ -212,9 +195,8 @@ class MomentumBreakoutStrategy:
         # SELL
         if (trend_tf == "BEARISH" and
             direction == "BEARISH" and
-            prev["close"] < prev["ema_fast"] < prev["ema_slow"] and
-            prev["rsi"] < self.cfg["rsi_sell"] and
-            tick.bid < prev["low"]):
+            prev["close"] < prev["ema_slow"] and
+            prev["rsi"] < self.cfg["rsi_sell"]):
 
             entry = tick.bid
             sl = (prev["open"] + prev["close"]) / 2

@@ -16,9 +16,13 @@ strategy = MomentumBreakoutStrategy(config)
 strategy.clear_screen()
 
 while True:
+
+    # FIND SIGNAL
     df = strategy.get_rates()
     df = strategy.apply_indicators(df)
     signal = strategy.check_entry(df)
+
+    # OPEN POSISI STATUS
     if not strategy.has_open_position():
         strategy.waiting_signal()
     else:
@@ -27,6 +31,8 @@ while True:
             strategy.open_buy()
         else:
             strategy.open_sell()
+
+    # SEND ORDER
     if signal:
         strategy.send_order(signal)
 
