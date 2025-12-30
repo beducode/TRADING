@@ -3,8 +3,8 @@
   "timeframe": "M5",
   "lot": 0.01,
 
-  "ema_fast": 20,
-  "ema_slow": 50,
+  "ema_fast": 50,
+  "ema_slow": 100,
   "rsi_period": 14,
   "atr_period": 14,
 
@@ -17,6 +17,7 @@
   "rr_tp1": 1,
   "rr_tp2": 1,
   "partial_ratio": 0.5,
+  "confirm_atr_ratio": 0.15,
 
   "anti_choppy": {
     "ema_distance_atr_ratio": 0.2,

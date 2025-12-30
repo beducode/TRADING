@@ -137,7 +137,19 @@ class MomentumBreakoutStrategy:
         df["atr_avg_20"] = df["atr"].rolling(20).mean()
 
         return df
-    
+
+    # =========================
+    # ANTI CHOPPY
+    # =========================
+    def anti_choppy(self, row):
+        if row["atr"] < row["atr_avg_20"] * self.cfg["anti_choppy"]["atr_ratio_min"]:
+            return False
+
+        if abs(row["ema_fast"] - row["ema_slow"]) < row["atr"] * self.cfg["anti_choppy"]["ema_distance_atr_ratio"]:
+            return False
+
+        return True
+
     # =========================
     # STRONG CANDLE
     # =========================
@@ -172,6 +184,10 @@ class MomentumBreakoutStrategy:
         direction = self.strong_candle(prev)
         if not direction:
             return None
+        
+        antichoppy = self.anti_choppy(prev)
+        if not antichoppy:
+            return None
 
         tick = mt5.symbol_info_tick(self.cfg["symbol"])
 
@@ -179,7 +195,15 @@ class MomentumBreakoutStrategy:
         if (trend_tf == "BULLISH" and
             direction == "BULLISH" and
             prev["close"] > prev["ema_slow"] and
-            prev["rsi"] > self.cfg["rsi_buy"]):
+            prev["rsi"] > self.cfg["rsi_buy"] and
+
+            # === BREAK LEVEL ===
+            tick.ask > prev["high"] and
+            
+            # === KONFIRMASI HARGA LANJUT NAIK ===
+            last["high"] > prev["high"] and  # follow through
+            tick.ask > prev["high"] + (prev["atr"] * self.cfg["confirm_atr_ratio"])
+            ):
 
             entry = tick.ask
             sl = (prev["open"] + prev["close"]) / 2
@@ -196,7 +220,16 @@ class MomentumBreakoutStrategy:
         if (trend_tf == "BEARISH" and
             direction == "BEARISH" and
             prev["close"] < prev["ema_slow"] and
-            prev["rsi"] < self.cfg["rsi_sell"]):
+            prev["rsi"] < self.cfg["rsi_sell"] and
+
+            # === BREAK LEVEL ===
+            tick.bid < prev["low"] and
+
+            # === KONFIRMASI HARGA LANJUT TURUN ===
+            last["low"] < prev["low"] and  # follow through
+            tick.bid < prev["low"] - (prev["atr"] * self.cfg["confirm_atr_ratio"])
+            
+            ):
 
             entry = tick.bid
             sl = (prev["open"] + prev["close"]) / 2
