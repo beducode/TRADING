@@ -16,7 +16,7 @@
 
   "rr_tp1": 0.5,
   "rr_tp2": 1,
-  "partial_ratio": 0.5,
+  "partial_ratio": 0.25,
 
   "anti_choppy": {
     "ema_distance_atr_ratio": 0.2,
