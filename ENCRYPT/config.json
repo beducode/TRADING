@@ -1,28 +1,76 @@
 {
-  "symbol": "XAUUSDm",
-  "timeframe": "M5",
-  "lot": 0.01,
+  "symbols": [
+    "XAUUSDm"
+  ],
 
-  "ema_fast": 50,
-  "ema_slow": 100,
-  "rsi_period": 14,
-  "atr_period": 14,
+  "sltp": {
+    "take_profit": 1.0
+  },
 
-  "rsi_buy": 55,
-  "rsi_sell": 45,
+  "timeframe": {
+    "trend": "M30",
+    "sr": "M15",
+    "entry": "M5"
+  },
 
-  "body_ratio_min": 0.70,
-  "atr_multiplier": 1.2,
+  "indicator": {
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "ema_trend": 200,
+    "atr_period": 14,
+    "atr_period_high": 20
+  },
 
-  "rr_tp1": 1,
-  "rr_tp2": 1,
-  "partial_ratio": 0.5,
-  "confirm_atr_ratio": 0.15,
+  "rsi": {
+    "rsi_period": 14,
+    "rsi_buy": 55,
+    "rsi_sell": 45
+  },
 
-  "anti_choppy": {
+  "stochastic": {
+    "stoch_period": 5,
+    "stoch_k": 3,
+    "stoch_d": 3,
+    "level_stoch_high": 80,
+    "level_stoch_low": 20,
+    "level_stoch_mid": 50
+  },
+
+  "candle": {
+    "body_ratio_min": 0.75
+  },
+
+  "atr": {
+    "confirm_atr_ratio": 0.15,
+    "atr_body": 1.2,
     "ema_distance_atr_ratio": 0.2,
     "atr_ratio_min": 0.8
   },
 
-  "magic": 20251230
+  "trade": {
+    "magic": 234000,
+    "deviation": 50,
+    "default_lot": 0.01
+  },
+
+  "session": {
+    "enable": true,
+
+    "london": {
+      "start": 14,
+      "end": 17
+    },
+
+    "newyork": {
+      "start": 19,
+      "end": 23
+    }
+  },
+
+  "news_filter": {
+    "block_hours": [
+      [12, 13],
+      [19, 20]
+    ]
+  }
 }
