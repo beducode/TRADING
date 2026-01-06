@@ -365,11 +365,10 @@ class AutoSRBot:
             tick.ask > df['high'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)
         ):
             entry = tick.ask
-            # open_prev = df['open'].iloc[-2] 
-            # close_prev = df['close'].iloc[-2] 
-            # body = abs(close_prev - open_prev) 
-            # sl = open_prev + (body / 2)
-            sl = df['open'].iloc[-2]
+            open_prev = df['open'].iloc[-2] 
+            close_prev = df['close'].iloc[-2] 
+            body = abs(close_prev - open_prev) 
+            sl = open_prev + (body / 2)
 
             # RR 1:1
             risk = entry - sl
@@ -393,11 +392,10 @@ class AutoSRBot:
             ):
 
             entry = tick.bid
-            # open_prev = df['open'].iloc[-2] 
-            # close_prev = df['close'].iloc[-2] 
-            # body = abs(close_prev - open_prev) 
-            # sl = open_prev - (body / 2)
-            sl = df['open'].iloc[-2]
+            open_prev = df['open'].iloc[-2] 
+            close_prev = df['close'].iloc[-2] 
+            body = abs(close_prev - open_prev) 
+            sl = open_prev - (body / 2)
 
             
             # RR 1:1
