@@ -476,7 +476,7 @@ class AutoSRBot:
             try:
                 for symbol in SYMBOLS:
                     if self.is_market_closed(symbol):
-                        print(f"Market CLOSED for {symbol} — waiting 1 hours...")
+                        print(f"MARKET CLOSED FOR {symbol} — WAITING 1 HOURS...")
                         time.sleep(3600)  # 1 jam = 3600 detik
                         continue
                     side = self.signal(symbol)
