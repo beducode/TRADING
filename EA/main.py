@@ -104,6 +104,33 @@ class AutoSRBot:
             raise RuntimeError("MT5 init failed")
         print("[OK] MT5 Connected")
 
+    def get_tick(self, symbol):
+        try:
+            return mt5.symbol_info_tick(symbol)
+        except Exception:
+            return None
+
+    def is_market_closed(self, symbol):
+        info = mt5.symbol_info(symbol)
+        tick = self.get_tick(symbol)
+
+        if info is None:
+            return True
+
+        # Jika symbol trading disabled → market tutup
+        if info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
+            return True
+
+        # Jika tick tidak ada → market tutup
+        if tick is None:
+            return True
+
+        # Jika bid/ask 0 → market tutup
+        if tick.bid == 0 or tick.ask == 0:
+            return True
+
+        return False
+
     # =========================
     # DATA
     # =========================
@@ -338,11 +365,10 @@ class AutoSRBot:
             tick.ask > df['high'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)
         ):
             entry = tick.ask
-            # SL ADA DI HARGA OPEN CANDLE SEBELUM NYA
-            open_prev  = df['open'].iloc[-2]
-            close_prev = df['close'].iloc[-2]
-            body = abs(close_prev - open_prev)
-            sl = min(open_prev, close_prev) + (body / 2)
+            open_prev = df['open'].iloc[-2] 
+            close_prev = df['close'].iloc[-2] 
+            body = abs(close_prev - open_prev) 
+            sl = open_prev + (body / 2)
 
             # RR 1:1
             risk = entry - sl
@@ -366,10 +392,11 @@ class AutoSRBot:
             ):
 
             entry = tick.bid
-            open_prev  = df['open'].iloc[-2]
-            close_prev = df['close'].iloc[-2]
-            body = abs(close_prev - open_prev)
-            sl = min(open_prev, close_prev) + (body / 2)
+            open_prev = df['open'].iloc[-2] 
+            close_prev = df['close'].iloc[-2] 
+            body = abs(close_prev - open_prev) 
+            sl = open_prev - (body / 2)
+
             
             # RR 1:1
             risk = sl - entry
@@ -448,6 +475,10 @@ class AutoSRBot:
         while True:
             try:
                 for symbol in SYMBOLS:
+                    if self.is_market_closed(symbol):
+                        print(f"Market CLOSED for {symbol} — waiting 1 hours...")
+                        time.sleep(3600)  # 1 jam = 3600 detik
+                        continue
                     side = self.signal(symbol)
                     if side:
                         sl, tp = self.sl_tp(side)
