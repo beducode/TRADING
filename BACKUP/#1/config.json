@@ -11,7 +11,7 @@
   "rsi_buy": 55,
   "rsi_sell": 45,
 
-  "body_ratio_min": 0.70,
+  "body_ratio_min": 0.75,
   "atr_multiplier": 1.2,
 
   "rr_tp1": 1,

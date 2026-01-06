@@ -6,6 +6,7 @@ import json
 import math
 from datetime import datetime
 from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange
 
 # ===========================
@@ -41,15 +42,6 @@ CONFIRM_ATR_RATIO = CONFIG["atr"]["confirm_atr_ratio"]
 RSI_PERIOD = CONFIG["rsi"]["rsi_period"]
 RSI_BUY = CONFIG["rsi"]["rsi_buy"]
 RSI_SELL = CONFIG["rsi"]["rsi_sell"]
-
-# ======================
-# STOCHASTIC 
-# ======================
-STOCH_PERIODE = CONFIG["stochastic"]["stoch_period"]
-K_SMOOTH = CONFIG["stochastic"]["stoch_k"]
-D_PERIODE = CONFIG["stochastic"]["stoch_d"]
-LEVEL_STOCH_HIGH = CONFIG["stochastic"]["level_stoch_high"]
-LEVEL_STOCH_LOW = CONFIG["stochastic"]["level_stoch_low"]
 
 # ======================
 # SESSION SETTINGS (WIB) 
@@ -133,33 +125,10 @@ class AutoSRBot:
         return price_distance
     
     # =========================
-    # CALCULATE STOCHASTIC
-    # =========================
-    def calculate_stochastic(self, symbol, k_period, k_smooth, d_period):
-        df = self.get_df(symbol, self.tf_fast, 500)
-        df['HH'] = df['high'].rolling(window=k_period).max()
-        df['LL'] = df['low'].rolling(window=k_period).min()
-        df['%K_raw'] = ((df['close'] - df['LL']) / (df['HH'] - df['LL'])) * 100
-        df['%K'] = df['%K_raw'].rolling(window=k_smooth).mean()
-        df['%D'] = df['%K'].rolling(window=d_period).mean()
-        return df
-    
-    def stochastic_signal(self, df):
-        buy_stoch = (df['%K'].iloc[-2] > LEVEL_STOCH_LOW) and (df['%K'].iloc[-2] < LEVEL_STOCH_HIGH) and df['%K'].iloc[-2] > df['%D'].iloc[-2] and df['%K'].iloc[-2] > df['%K'].iloc[-3]
-        sell_stoch = (df['%K'].iloc[-2] > LEVEL_STOCH_LOW) and (df['%K'].iloc[-2] < LEVEL_STOCH_HIGH) and df['%K'].iloc[-2] < df['%D'].iloc[-2] and df['%K'].iloc[-2] < df['%K'].iloc[-3]
-
-        if buy_stoch:
-            return 'BUY'
-        elif sell_stoch:
-            return 'SELL'
-        else:
-            return 'WAIT'
-    
-    # =========================
     # GET CLOSE CANDLE TIME
     # =========================
     def get_closed_candle_time(self, symbol):
-        df = self.get_df(symbol, self.tf_fast, 500)
+        df = self.get_df(symbol, self.tf_fast, 3)
         if df is None:
             return None
         return df['time'].iloc[-2]  # candle sudah close
@@ -169,7 +138,6 @@ class AutoSRBot:
     # =========================
     def get_last_candle(self, timeframe, symbol):
         tf_map = {
-            "M1": mt5.TIMEFRAME_M1,
             "M5": mt5.TIMEFRAME_M5,
             "M15": mt5.TIMEFRAME_M15,
             "M30": mt5.TIMEFRAME_M30,
@@ -191,7 +159,7 @@ class AutoSRBot:
     # MULTI TREND
     # =========================
     def trend(self, symbol):
-        tfs = ["H1", "M30", "M15", "M5", "M1"]
+        tfs = ["H1", "M30", "M15", "M5"]
         bullish = 0
         bearish = 0
         
@@ -215,7 +183,7 @@ class AutoSRBot:
     # =========================
     # STRONG CANDLE
     # =========================
-    def strong_candle(self, row, atr, trend):
+    def strong_candle(self, row, atr):
         close = row['close'].iloc[-2]
         open = row['open'].iloc[-2]
         high = row['high'].iloc[-2]
@@ -224,12 +192,11 @@ class AutoSRBot:
         body = abs(close - open)
         com_body_ratio = body / rng
         body_range = atr * ATR_BODY
-
         if (rng >= 0) and (com_body_ratio > BODY_RATIO) and (rng > body_range):
             if close > open:
                 return 'BULLISH'
             else:
-                return "BEARISH"
+                return 'BEARISH'
         
         return "WAIT"
     
@@ -308,9 +275,9 @@ class AutoSRBot:
         # =========================
         atr_low = AverageTrueRange(df['high'], df['low'], df['close'], self.atr_period).average_true_range()
         atr_high = AverageTrueRange(df['high'], df['low'], df['close'], self.atr_period_high).average_true_range()
+        rsi = RSIIndicator(df['close'], RSI_PERIOD).rsi()
         ema_fast = EMAIndicator(df["close"], self.ema_fast).ema_indicator()
         ema_slow = EMAIndicator(df["close"], self.ema_slow).ema_indicator()
-        ema_trend = EMAIndicator(df["close"], self.ema_trend).ema_indicator()
 
         # =========================
         # CHECK POSITION
@@ -319,74 +286,76 @@ class AutoSRBot:
         if position:
             return None
             
-        trend_multiframe = self.trend(symbol)
-        candle_trend = self.strong_candle(df, atr_low.iloc[-2], ema_trend)
-        data_stoch = self.calculate_stochastic(symbol, STOCH_PERIODE, K_SMOOTH, D_PERIODE)
-        signal_stoch = self.stochastic_signal(data_stoch)
-        close_candle = df['close'].iloc[-2]
+        trend = self.trend(symbol)
+        candle_cond = self.strong_candle(df, atr_low.iloc[-2])
+        
+        antichoppy = self.anti_choppy(atr_low.iloc[-2], atr_high.iloc[-2], ema_fast.iloc[-2], ema_slow.iloc[-2])
         
         tick = mt5.symbol_info_tick(symbol)
 
         # BUY
         if(
-            trend_multiframe == "BULLISH" and
-            candle_trend == "BULLISH" and
-            signal_stoch == "BUY" and
-            close_candle > ema_trend.iloc[-2] and
-            # === KONFIRMASI HARGA LANJUT NAIK ===
-            df['high'].iloc[-1] > df['high'].iloc[-2] and
-            tick.ask > df['high'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)
+            # trend == "BULLISH" and
+            candle_cond == "BULLISH" and
+            # antichoppy and
+            # df['close'].iloc[-2] > ema_slow.iloc[-2] and
+            # rsi.iloc[-2] > RSI_BUY and
+            # === BREAK LEVEL ===
+            tick.ask > df['high'].iloc[-2] 
+            # and
+
+            # # === KONFIRMASI HARGA LANJUT NAIK ===
+            # df['high'].iloc[-1] > df['high'].iloc[-2] and
+            # tick.ask > df['high'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)
         ):
             entry = tick.ask
             # SL ADA DI HARGA OPEN CANDLE SEBELUM NYA
-            open_prev  = df['open'].iloc[-2]
-            close_prev = df['close'].iloc[-2]
-            body = abs(close_prev - open_prev)
-            sl = min(open_prev, close_prev) + (body / 2)
+            sl = df['open'].iloc[-2]
 
-            # RR 1:1
-            risk = entry - sl
-            tp = entry + risk
+            # TP SESUAI CALC USD
+            tp_distance = self.calc_tp_usd(symbol, self.default_lot)
 
             return {
                 "side": "BUY",
                 "entry": entry,
                 "sl": sl,
-                "tp": tp
+                "tp": entry + tp_distance
             }
         
         # SELL
         if (
-            trend_multiframe == "BEARISH" and
-            candle_trend == "BEARISH" and
-            signal_stoch == "SELL" and
-            close_candle < ema_trend.iloc[-2] and
-            # === KONFIRMASI HARGA LANJUT TURUN ===
-            df['low'].iloc[-1] > df['low'].iloc[-2] and
-            tick.bid < df['low'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)   
+            # trend == "BEARISH" and
+            candle_cond == "BEARISH" and
+            # antichoppy and
+            # df['close'].iloc[-2] < ema_slow.iloc[-2] and
+            # rsi.iloc[-2] < RSI_SELL and
+
+            # === BREAK LEVEL ===
+            tick.bid < df['high'].iloc[-2] 
+            # and
+
+            # # === KONFIRMASI HARGA LANJUT TURUN ===
+            # df['low'].iloc[-1] > df['low'].iloc[-2] and
+            # tick.bid > df['low'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)    
             ):
 
             entry = tick.bid
-            open_prev  = df['open'].iloc[-2]
-            close_prev = df['close'].iloc[-2]
-            body = abs(close_prev - open_prev)
-            sl = min(open_prev, close_prev) + (body / 2)
+            sl = df['open'].iloc[-2]
             
-            # RR 1:1
-            risk = sl - entry
-            tp = entry - risk
+            # TP SESUAI CALC USD
+            tp_distance = self.calc_tp_usd(symbol, self.default_lot)
 
             return {
                 "side": "SELL",
                 "entry": entry,
                 "sl": sl,
-                "tp": tp
+                "tp": entry - tp_distance
             }
 
-        if trend_multiframe == 'BULLISH':
-            print(f"PAIR : {symbol} | TREND : {trend_multiframe} | STOCH : {signal_stoch} | CANDLE : {candle_trend}")
+        if trend == 'BUY':
+            print(f"PAIR : {symbol} | CANDLE : {candle_cond}")
         else:
-            print(f"PAIR : {symbol} | TREND : {trend_multiframe} | STOCH : {signal_stoch} | CANDLE : {candle_trend}")
+            print(f"PAIR : {symbol} | CANDLE : {candle_cond}")
 
         return None
     

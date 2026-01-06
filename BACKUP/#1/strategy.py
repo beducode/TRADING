@@ -174,6 +174,10 @@ class MomentumBreakoutStrategy:
         prev = df.iloc[-2]
         last = df.iloc[-1]
 
+        print(prev["close"])
+        print(last["ema_slow"])
+        print(prev["high"])
+
         if mt5.positions_total() > 0:
             return None
         
@@ -194,15 +198,15 @@ class MomentumBreakoutStrategy:
         # BUY
         if (trend_tf == "BULLISH" and
             direction == "BULLISH" and
-            prev["close"] > prev["ema_slow"] and
+            prev["close"] > last["ema_slow"] and
             prev["rsi"] > self.cfg["rsi_buy"] and
 
             # === BREAK LEVEL ===
-            tick.ask > prev["high"] and
+            tick.ask > prev["high"] #and
             
-            # === KONFIRMASI HARGA LANJUT NAIK ===
-            last["high"] > prev["high"] and  # follow through
-            tick.ask > prev["high"] + (prev["atr"] * self.cfg["confirm_atr_ratio"])
+            # # === KONFIRMASI HARGA LANJUT NAIK ===
+            # last["high"] > prev["high"] and  # follow through
+            # tick.ask > prev["high"] + (prev["atr"] * self.cfg["confirm_atr_ratio"])
             ):
 
             entry = tick.ask
@@ -219,15 +223,16 @@ class MomentumBreakoutStrategy:
         # SELL
         if (trend_tf == "BEARISH" and
             direction == "BEARISH" and
-            prev["close"] < prev["ema_slow"] and
+
+            prev["close"] < last["ema_slow"] and
             prev["rsi"] < self.cfg["rsi_sell"] and
 
             # === BREAK LEVEL ===
-            tick.bid < prev["low"] and
+            tick.bid < prev["low"] #and
 
-            # === KONFIRMASI HARGA LANJUT TURUN ===
-            last["low"] < prev["low"] and  # follow through
-            tick.bid < prev["low"] - (prev["atr"] * self.cfg["confirm_atr_ratio"])
+            # # === KONFIRMASI HARGA LANJUT TURUN ===
+            # last["low"] < prev["low"] and  # follow through
+            # tick.bid < prev["low"] - (prev["atr"] * self.cfg["confirm_atr_ratio"])
             
             ):
 
