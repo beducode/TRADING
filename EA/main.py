@@ -50,6 +50,7 @@ K_SMOOTH = CONFIG["stochastic"]["stoch_k"]
 D_PERIODE = CONFIG["stochastic"]["stoch_d"]
 LEVEL_STOCH_HIGH = CONFIG["stochastic"]["level_stoch_high"]
 LEVEL_STOCH_LOW = CONFIG["stochastic"]["level_stoch_low"]
+LEVEL_STOCH_MID = CONFIG["stochastic"]["level_stoch_mid"]
 
 # ======================
 # SESSION SETTINGS (WIB) 
@@ -145,8 +146,8 @@ class AutoSRBot:
         return df
     
     def stochastic_signal(self, df):
-        buy_stoch = (df['%K'].iloc[-2] > LEVEL_STOCH_LOW) and df['%K'].iloc[-2] > df['%D'].iloc[-2] and df['%K'].iloc[-2] > df['%K'].iloc[-3]
-        sell_stoch = (df['%K'].iloc[-2] < LEVEL_STOCH_LOW) and df['%K'].iloc[-2] < df['%D'].iloc[-2] and df['%K'].iloc[-2] < df['%K'].iloc[-3]
+        buy_stoch = (df['%K'].iloc[-1] > LEVEL_STOCH_MID) and df['%K'].iloc[-1] > df['%D'].iloc[-1] and df['%K'].iloc[-1] > df['%K'].iloc[-2]
+        sell_stoch = (df['%K'].iloc[-1] < LEVEL_STOCH_MID) and df['%K'].iloc[-1] < df['%D'].iloc[-1] and df['%K'].iloc[-1] < df['%K'].iloc[-2]
 
         if buy_stoch:
             return 'BUY'
@@ -215,7 +216,7 @@ class AutoSRBot:
     # =========================
     # STRONG CANDLE
     # =========================
-    def strong_candle(self, row, atr, trend):
+    def strong_candle(self, row, atr):
         close = row['close'].iloc[-2]
         open = row['open'].iloc[-2]
         high = row['high'].iloc[-2]
@@ -225,7 +226,7 @@ class AutoSRBot:
         com_body_ratio = body / rng
         body_range = atr * ATR_BODY
 
-        if (rng >= 0) and (com_body_ratio > BODY_RATIO) and (rng > body_range):
+        if (rng >= 0) and (com_body_ratio > BODY_RATIO):
             if close > open:
                 return 'BULLISH'
             else:
@@ -320,7 +321,7 @@ class AutoSRBot:
             return None
             
         trend_multiframe = self.trend(symbol)
-        candle_trend = self.strong_candle(df, atr_low.iloc[-2], ema_trend)
+        candle_trend = self.strong_candle(df, atr_low.iloc[-2])
         data_stoch = self.calculate_stochastic(symbol, STOCH_PERIODE, K_SMOOTH, D_PERIODE)
         signal_stoch = self.stochastic_signal(data_stoch)
         close_candle = df['close'].iloc[-2]
@@ -331,7 +332,7 @@ class AutoSRBot:
         if(
             candle_trend == "BULLISH" and
             signal_stoch == "BUY" and
-            ema_fast.iloc[-2] > ema_slow.iloc[-2] and
+            close_candle > ema_slow.iloc[-2] and
             # === KONFIRMASI HARGA LANJUT NAIK ===
             df['high'].iloc[-1] > df['high'].iloc[-2] and
             tick.ask > df['high'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)
@@ -341,7 +342,7 @@ class AutoSRBot:
             open_prev  = df['open'].iloc[-2]
             close_prev = df['close'].iloc[-2]
             body = abs(close_prev - open_prev)
-            sl = min(open_prev, close_prev) + (body / 1)
+            sl = min(open_prev, close_prev) + (body / 2)
 
             # RR 1:1
             risk = entry - sl
@@ -358,7 +359,7 @@ class AutoSRBot:
         if (
             candle_trend == "BEARISH" and
             signal_stoch == "SELL" and
-            ema_fast.iloc[-2] < ema_slow.iloc[-2] and
+            close_candle < ema_slow.iloc[-2] and
             # === KONFIRMASI HARGA LANJUT TURUN ===
             df['low'].iloc[-1] > df['low'].iloc[-2] and
             tick.bid < df['low'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)   
@@ -368,7 +369,7 @@ class AutoSRBot:
             open_prev  = df['open'].iloc[-2]
             close_prev = df['close'].iloc[-2]
             body = abs(close_prev - open_prev)
-            sl = min(open_prev, close_prev) + (body / 1)
+            sl = min(open_prev, close_prev) + (body / 2)
             
             # RR 1:1
             risk = sl - entry

@@ -8,9 +8,9 @@
   },
 
   "timeframe": {
-    "trend": "M15",
-    "sr": "M5",
-    "entry": "M1"
+    "trend": "M30",
+    "sr": "M15",
+    "entry": "M5"
   },
 
   "indicator": {
@@ -32,11 +32,12 @@
     "stoch_k": 3,
     "stoch_d": 3,
     "level_stoch_high": 80,
-    "level_stoch_low": 20
+    "level_stoch_low": 20,
+    "level_stoch_mid": 50
   },
 
   "candle": {
-    "body_ratio_min": 0.60
+    "body_ratio_min": 0.70
   },
 
   "atr": {
