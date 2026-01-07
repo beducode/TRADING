@@ -23,12 +23,12 @@
 
   "rsi": {
     "rsi_period": 14,
-    "rsi_buy": 55,
-    "rsi_sell": 45
+    "rsi_buy": 70,
+    "rsi_sell": 30
   },
 
   "stochastic": {
-    "stoch_period": 5,
+    "stoch_period": 14,
     "stoch_k": 3,
     "stoch_d": 3,
     "level_stoch_high": 80,
@@ -37,7 +37,7 @@
   },
 
   "candle": {
-    "body_ratio_min": 0.75
+    "body_ratio_min": 0.60
   },
 
   "atr": {

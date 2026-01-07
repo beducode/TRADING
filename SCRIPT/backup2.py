@@ -221,13 +221,7 @@ class AutoSRBot:
     # =========================
     # CANDLE PATTERN
     # =========================
-    def bullish_engulfing(self, symbol):
-        df = self.get_df(symbol, self.tf_fast, 500)
-        if df is None:
-            return False
-        prev = df.iloc[-2]
-        curr = df.iloc[-1]
-        
+    def bullish_engulfing(self, prev, curr):
         return (
             prev["close"] < prev["open"] and
             curr["close"] > curr["open"] and
@@ -235,13 +229,7 @@ class AutoSRBot:
             curr["open"] < prev["close"]
         )
 
-    def bearish_engulfing(self, symbol):
-        df = self.get_df(symbol, self.tf_fast, 500)
-        if df is None:
-            return False
-        prev = df.iloc[-2]
-        curr = df.iloc[-1]
-
+    def bearish_engulfing(self,prev, curr):
         return (
             prev["close"] > prev["open"] and
             curr["close"] < curr["open"] and
@@ -249,23 +237,13 @@ class AutoSRBot:
             curr["close"] < prev["open"]
         )
 
-    def hammer(self,symbol):
-        df = self.get_df(symbol, self.tf_fast, 500)
-        if df is None:
-            return False
-        c = df.iloc[-1]
-
+    def hammer(self,c):
         body = abs(c["close"] - c["open"])
         lower = min(c["open"], c["close"]) - c["low"]
         upper = c["high"] - max(c["open"], c["close"])
         return lower >= body * 2 and upper <= body
 
-    def shooting_star(self,symbol):
-        df = self.get_df(symbol, self.tf_fast, 500)
-        if df is None:
-            return False
-        c = df.iloc[-1]
-    
+    def shooting_star(self,c):
         body = abs(c["close"] - c["open"])
         upper = c["high"] - max(c["open"], c["close"])
         lower = min(c["open"], c["close"]) - c["low"]
@@ -398,10 +376,13 @@ class AutoSRBot:
             candle_trend == "BULLISH" and
             ema_fast.iloc[-2] > ema_slow.iloc[-2] and
             tick.ask > df['high'].iloc[-2] and
+            # # === KONFIRMASI HARGA LANJUT NAIK ===
+            # df['high'].iloc[-1] > df['high'].iloc[-2] and
+            # tick.ask > df['high'].iloc[-2]
             rsi <= RSI_SELL and
             signal_stoch <= LEVEL_STOCH_LOW and
             (
-                self.bullish_engulfing(symbol) or self.hammer(symbol)
+                self.bullish_engulfing(df['close'].iloc[-2], df['close'].iloc[-1]) or self.hammer(df['close'].iloc[-1])
             )
         ):
             entry = tick.ask
@@ -426,10 +407,13 @@ class AutoSRBot:
             candle_trend == "BEARISH" and
             ema_fast.iloc[-2] < ema_slow.iloc[-2] and
             tick.bid < df['low'].iloc[-2] and
+            # # === KONFIRMASI HARGA LANJUT TURUN ===
+            # df['low'].iloc[-1] > df['low'].iloc[-2] and
+            # tick.bid < df['low'].iloc[-2] + (atr_low.iloc[-2] * CONFIRM_ATR_RATIO)
             rsi >= RSI_BUY and
             signal_stoch >= LEVEL_STOCH_HIGH and
             (
-                self.bearish_engulfing(symbol) or self.shooting_star(symbol)
+                self.bearish_engulfing(df['close'].iloc[-2], df['close'].iloc[-1]) or self.shooting_star(df['close'].iloc[-1])
             )
         ):
 
@@ -453,9 +437,9 @@ class AutoSRBot:
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if trend_multiframe == 'BULLISH':
-            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch:.2f} | RSI : {rsi:.2f}")
+            print(f"[{now}] PAIR : {symbol} | STOCH : {signal_stoch} | RSI : {rsi}")
         else:
-            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch:.2f} | RSI : {rsi:.2f}")
+            print(f"[{now}] PAIR : {symbol} | STOCH : {signal_stoch} | RSI : {rsi}")
 
         return None
     
