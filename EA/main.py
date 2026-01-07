@@ -131,6 +131,30 @@ class AutoSRBot:
             return True
 
         return False
+    
+    # =========================
+    # STOCHASTIC
+    # =========================
+    def calculate_stochastic(self, df, k_period, k_smooth, d_period):
+        df = df.copy()
+        df['HH'] = df['high'].rolling(window=k_period).max()
+        df['LL'] = df['low'].rolling(window=k_period).min()
+        df['%K_raw'] = ((df['close'] - df['LL']) / (df['HH'] - df['LL'])) * 100
+        df['%K'] = df['%K_raw'].rolling(window=k_smooth).mean()
+        df['%D'] = df['%K'].rolling(window=d_period).mean()
+        return df
+        
+
+    def stochastic_signal(self, df):
+        buy_stoch = df['%K'].iloc[-1] < LEVEL_STOCH_LOW and df['%K'].iloc[-1] > df['%D'].iloc[-1]
+        sell_stoch = df['%K'].iloc[-1] > LEVEL_STOCH_HIGH and df['%K'].iloc[-1] < df['%D'].iloc[-1]
+
+        if buy_stoch:
+            return 'BUY'
+        elif sell_stoch:
+            return 'SELL'
+        else:
+            return 'WAIT'
 
     # =========================
     # DATA
@@ -380,15 +404,9 @@ class AutoSRBot:
             
         trend_multiframe = self.trend(symbol)
         candle_trend = self.strong_candle(df, atr_low.iloc[-2])
-        rsi = RSIIndicator(df['close'], RSI_PERIOD).rsi().iloc[-2]
-        stoch = StochasticOscillator(
-            df['high'],
-            df['low'],
-            df['close'],
-            window=STOCH_PERIODE,
-            smooth_window=K_SMOOTH
-        )
-        signal_stoch = stoch.stoch().iloc[-2]
+        rsi = RSIIndicator(df['close'], RSI_PERIOD).rsi().iloc[-1]
+        data_stoch = self.calculate_stochastic(df, STOCH_PERIODE, K_SMOOTH, D_PERIODE)
+        signal_stoch = self.stochastic_signal(data_stoch)
         close_candle = df['close'].iloc[-2]
         
         tick = mt5.symbol_info_tick(symbol)
@@ -399,7 +417,7 @@ class AutoSRBot:
             ema_fast.iloc[-2] > ema_slow.iloc[-2] and
             tick.ask > df['high'].iloc[-2] and
             rsi <= RSI_SELL and
-            signal_stoch <= LEVEL_STOCH_LOW and
+            signal_stoch == 'BUY' and
             (
                 self.bullish_engulfing(symbol) or self.hammer(symbol)
             )
@@ -427,7 +445,7 @@ class AutoSRBot:
             ema_fast.iloc[-2] < ema_slow.iloc[-2] and
             tick.bid < df['low'].iloc[-2] and
             rsi >= RSI_BUY and
-            signal_stoch >= LEVEL_STOCH_HIGH and
+            signal_stoch == 'SELL' and
             (
                 self.bearish_engulfing(symbol) or self.shooting_star(symbol)
             )
@@ -453,9 +471,9 @@ class AutoSRBot:
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if trend_multiframe == 'BULLISH':
-            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch:.2f} | RSI : {rsi:.2f}")
+            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch} | RSI : {rsi:.2f}")
         else:
-            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch:.2f} | RSI : {rsi:.2f}")
+            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch} | RSI : {rsi:.2f}")
 
         return None
     
