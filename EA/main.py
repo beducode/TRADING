@@ -409,10 +409,11 @@ class AutoSRBot:
                 "tp": tp
             }
 
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if trend_multiframe == 'BULLISH':
-            print(f"PAIR : {symbol} | STOCH : {signal_stoch} | CANDLE : {candle_trend}")
+            print(f"[{now}] PAIR : {symbol} | STOCH : {signal_stoch} | CANDLE : {candle_trend}")
         else:
-            print(f"PAIR : {symbol} | STOCH : {signal_stoch} | CANDLE : {candle_trend}")
+            print(f"[{now}] PAIR : {symbol} | STOCH : {signal_stoch} | CANDLE : {candle_trend}")
 
         return None
     
