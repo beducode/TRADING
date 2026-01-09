@@ -393,6 +393,7 @@ class AutoSRBot:
         atr_high = AverageTrueRange(df['high'], df['low'], df['close'], self.atr_period_high).average_true_range()
         ema_fast = EMAIndicator(df["close"], self.ema_fast).ema_indicator()
         ema_slow = EMAIndicator(df["close"], self.ema_slow).ema_indicator()
+        ema_trend = EMAIndicator(df["close"], self.ema_trend).ema_indicator()
 
         # =========================
         # CHECK POSITION
@@ -401,21 +402,29 @@ class AutoSRBot:
         if position:
             return None
             
+        trend_multiframe = self.trend(symbol)
         candle_trend = self.strong_candle(df, atr_low.iloc[-2])
-        crossema_bull = ema_fast.iloc[-1] > ema_slow.iloc[-1]
-        crossema_bear = ema_fast.iloc[-1] < ema_slow.iloc[-1]
-        open_prev = df['open'].iloc[-2] 
-        close_prev = df['close'].iloc[-2]
+        rsi = RSIIndicator(df['close'], RSI_PERIOD).rsi().iloc[-1]
+        data_stoch = self.calculate_stochastic(df, STOCH_PERIODE, K_SMOOTH, D_PERIODE)
+        signal_stoch = self.stochastic_signal(data_stoch)
+        close_candle = df['close'].iloc[-2]
         
-        tick = self.get_tick(symbol)
+        tick = mt5.symbol_info_tick(symbol)
 
         # BUY
         if(
             candle_trend == "BULLISH" and
-            crossema_bull and
-            close_prev > ema_fast.iloc[-2]
+            ema_fast.iloc[-2] > ema_slow.iloc[-2] and
+            tick.ask > df['high'].iloc[-2] and
+            rsi <= RSI_SELL and
+            signal_stoch == 'BUY' and
+            (
+                self.bullish_engulfing(symbol) or self.hammer(symbol)
+            )
         ):
-            entry = tick.ask 
+            entry = tick.ask
+            open_prev = df['open'].iloc[-2] 
+            close_prev = df['close'].iloc[-2] 
             body = abs(close_prev - open_prev) 
             sl = open_prev + (body / 2)
 
@@ -433,8 +442,13 @@ class AutoSRBot:
         # SELL
         if (
             candle_trend == "BEARISH" and
-            crossema_bear and
-            close_prev < ema_fast.iloc[-2]
+            ema_fast.iloc[-2] < ema_slow.iloc[-2] and
+            tick.bid < df['low'].iloc[-2] and
+            rsi >= RSI_BUY and
+            signal_stoch == 'SELL' and
+            (
+                self.bearish_engulfing(symbol) or self.shooting_star(symbol)
+            )
         ):
 
             entry = tick.bid
@@ -456,10 +470,10 @@ class AutoSRBot:
             }
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if candle_trend == 'BULLISH':
-            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | CROSS EMA : {'BULLISH' if crossema_bull else 'NO CROSS'}")
+        if trend_multiframe == 'BULLISH':
+            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch} | RSI : {rsi:.2f}")
         else:
-            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | CROSS EMA : {'BEARISH' if crossema_bear else 'NO CROSS'}")
+            print(f"[{now}] PAIR : {symbol} | CANDLE : {candle_trend} | STOCH : {signal_stoch} | RSI : {rsi:.2f}")
 
         return None
     

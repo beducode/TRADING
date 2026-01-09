@@ -37,7 +37,7 @@
   },
 
   "candle": {
-    "body_ratio_min": 0.60
+    "body_ratio_min": 0.70
   },
 
   "atr": {
